@@ -6,11 +6,12 @@
 
 
 # General pipeline
-makeMainDataFrame <-function(this_pathway, umap_coords = F){
+makeMainDataFrame <-function(this_pathway,master_seurat =c() ){
   # We fetch the gene data from the seurat_obj
   # And merge with meta data
   pathway_matrix<-FetchData(master_seurat, this_pathway) # Log norm
-  devel_adult <- cbind(pathway_matrix, master_seurat@meta.data %>% dplyr::select(Tissue, age,dataset,cell_ontology_class, Cell_class))
+  devel_adult <- cbind(pathway_matrix, master_seurat@meta.data %>%
+      dplyr::select(Tissue, age,dataset,cell_ontology_class, Cell_class, cell_id))
   row.names(devel_adult)<-1:dim(devel_adult)[1]
 
 
@@ -18,8 +19,8 @@ makeMainDataFrame <-function(this_pathway, umap_coords = F){
   return(devel_adult)
 }
 
-normalizedDevel <- function(this_pathway, sat_val =0.99, fill_zero_rows = F ){
-    devel_adult <- makeMainDataFrame(this_pathway) #pink variables go to Shiny
+normalizedDevel <- function(this_pathway, sat_val =0.99, fill_zero_rows = F , master_seurat = c() ){
+    devel_adult <- makeMainDataFrame(this_pathway, master_seurat) #pink variables go to Shiny
 
     devel_adult %>% mutate(cell_id = paste(global_cluster, dataset,sep="_")) -> devel_adult
 
