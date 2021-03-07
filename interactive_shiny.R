@@ -40,7 +40,7 @@ normalizedDevel <- function(this_pathway, sat_val =0.99, fill_zero_rows = F , ma
 
     x<- min.maxNorm(x)
 		if(fill_zero_rows)
-			x[x==0] = 10^-7
+			x[x==0] = 10^-10
 
 		devel_adult[,this_pathway] <- x
 
