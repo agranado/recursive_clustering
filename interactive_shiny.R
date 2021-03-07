@@ -22,7 +22,8 @@ makeMainDataFrame <-function(this_pathway,master_seurat =c() ){
 normalizedDevel <- function(this_pathway, sat_val =0.99, fill_zero_rows = F , master_seurat = c() ){
     devel_adult <- makeMainDataFrame(this_pathway, master_seurat) #pink variables go to Shiny
 
-    devel_adult %>% mutate(cell_id = paste(global_cluster, dataset,sep="_")) -> devel_adult
+    if(! 'cell_id' %in% names(master_seurat@meta.data))
+      devel_adult %>% mutate(cell_id = paste(global_cluster, dataset,sep="_")) -> devel_adult
 
     x =devel_adult[,this_pathway]
     max_sat_gene = apply(x, 2, quantile, sat_val) # starts from x
