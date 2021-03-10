@@ -187,7 +187,7 @@ reClusterPathway<- function(count_mat = matrix() ,
       # k is the number of eigen-vectors
     spec_res = Spectrum(t(count_mat), maxk = k, showres = F,
                         method = spec_method,
-                        kerneltype = spec_kernel)
+                        kerneltype = spec_kernel, clusteralg = 'km')
 
     # 5. Manual spectral clustering (on k)
     manual_res = manualSpectral2(A = spec_res$similarity_matrix, labels = meta_data, k_opt =k)
@@ -1156,6 +1156,157 @@ silh_run <- function(x){
 }
 
 
+# Test different k for spectral clustering
+silh_run_k<-function(k, kernel = 'density', this_pathway = c() ){
+
+		devel_adult <- makeMainDataFrame(this_pathway, master_seurat ) #pink variables go to Shiny
+		#devel_adult
+
+    p_list<-clusterPathway(
+        devel_adult = devel_adult,
+        which_pathway = this_pathway,
+        max_satu =1, # not needed if using min.max
+        min_expr = 0, #filte on rowsums
+        k_opt = k, # number of clusters Spectral
+        spec_method = 1,
+        spec_kernel = kernel,
+        unique_cell_types = F,
+        min_max = T,
+        sat_quantile = T, # saturate values at quantile
+        sat_val = 0.99, # use this quantile as max for min.max
+				min_expr_single_cell = 0.0
+      )
+
+    master_clustered = makeMasterClustered(p_list, k_opt = k)
+
+
+		#three_silhouettes(master_clustered, this_pathway, metric = 'euclidean', title =toString(k))
+		#three_silhouettes(master_clustered, this_pathway, metric = 'cosine', title = toString(k))
+
+    s1<-cluster_silhouette(master_clustered, this_pathway) # original clustering
+    return(s1)
+}
+# Mar 8th, from Notion
+# Called by silh_run_k to test silhouette score across k initial values
+three_silhouettes<-function(master_clustered, this_pathway,
+														metric = 'euclidean', title = "", return_array = F,
+														methods = 'all'){
+
+		if(methods =="all")
+			methods =c("complete", "single", "ward.D2")
+		line_colors = c("black","blue","orange")
+		for(i in 1:length(methods)){
+			s =silh_spectral(master_clustered, this_pathway , dist_method =metric, clust_method = methods[i])
+			if(i==1) plot(s, col = line_colors[i], main = paste(title, metric), ylim = c(0,1))
+			lines(s, col = line_colors[i])
+		}
+		if(return_array) return(s)
+
+}
+
+# silhouette score from master_clustered object
+# does not require Seurat object
+# called by three_silhouettes
+silh_spectral<-function(master_clustered, this_pathway, dist_method ='euclidean',
+												clust_method ="complete"){
+		gather(master_clustered, c(this_pathway), key = "gene", value ="expr") %>%
+				filter(motif_label>0) %>% group_by(motif_label, gene) %>%
+				summarise(mean_expr = mean(expr)) %>%
+				spread(gene, mean_expr ) -> tidy_clustering
+
+		tidy_clustering %>% tibble::column_to_rownames('motif_label') -> tidy_clustering
+		x<-tidy_clustering %>% as.matrix()
+		if(dist_method =='cosine'){
+			dist_mat = dist.cosine(x)
+		}else{
+			dist_mat = dist(x)
+		}
+
+		tree = hclust(dist_mat, method =clust_method)
+
+		silh_k<- sapply(2:(dim(x)[1]-1), function(i){silhouette(cutree(tree, i), dist_mat)[,3] %>% mean() } )
+
+		return(silh_k)
+
+}
+
+
+# Mar 8th
+# cluster using hclust on the actual matrix
+# skips all spectral clustering and recursive pipeline
+# runs really fast compared to other clustering methods (especially Spectrum)
+#cells_include: array with cell_id to cluster
+#
+silh_run_hclust <- function(x, k =35, cells_include = c() , master_seurat = c(), clust_method ='complete'){
+    this_pathway = x
+
+		devel_adult = normalizedDevel(this_pathway, sat_val =0.99, fill_zero_rows = F ,
+											master_seurat )
+
+		devel_adult %>% dplyr::filter( cell_id %in% cells_include) -> devel_adult
+		row.names(devel_adult) <- devel_adult$global_cluster
+		#  dist_pca works with globalclusters as row.names
+		x = devel_adult[,this_pathway] %>% as.matrix
+		dist_mat = dist(x)
+		clustering = cutree(hclust(dist_mat, method = clust_method ), k)
+    devel_adult$motif_label = clustering
+
+		master_clustered = devel_adult #this has motif label now
+    s1<-cluster_silhouette(master_clustered, this_pathway = this_pathway) # original clustering
+		umap_stats <-    makeUmapStats(master_clustered, s1,
+																					this_pathway = this_pathway,
+																					dist_method ='user',
+																					user_dist_matrix = dist_pca)
+
+		#umap_stats_cosine <-    makeUmapStats(master_clustered, s1,
+		#																			this_pathway = this_pathway,
+		#																			dist_method ='user',
+		#																			user_dist_matrix = dist_cosine_pca)
+
+
+
+
+    out = list(umap_stats, list(), master_clustered)
+
+
+    return(out)
+}
+
+
+# recluster the recursive_res object with a specified k value
+# uses hclust on the recursive labels.
+# Mar 8th
+recluster_umap_stats <-function(n_motifs = 18,
+                                recursive_res = list(),
+																master_recursive = data.frame(),
+
+																dist_metric ='euclidean',
+                                clustering_method ='complete',
+																filter_profiles = F){
+		# Here we take all-recursive labels and re-cluster them using hclust
+		# We could filter the recursive labels with no expression
+		# these will be clustered badly since cosine distance ignores magnitudes.
+
+		master_hclust<- recluster_Hclust(recursive_res , master_recursive ,
+		                                 this_pathway, n_motifs = n_motifs,
+                                     clust_method = clustering_method ,
+		                                 metric = dist_metric,
+		                                 filter_low = filter_profiles,
+																		 fil_threshold = 0.4)
+
+		# silhouette score for individual data point on the new clustering
+		s_hclust <- cluster_silhouette(master_hclust, this_pathway, dist = dist_metric)
+
+		# scatter_expor2 has the recursive labels for each profile
+		umap_stats_hclust <- makeUmapStats(master_hclust,
+		                                   silh_scores = s_hclust, dist_method = "user",
+		                                   user_dist_matrix = dist_pca ,
+		                                   this_pathway = this_pathway )
+
+		return(list(umap_stats_hclust, master_hclust)) #return final umap stats object
+}
+
+
 # Feb 10th
 # Parse the output into data.frames:
 # Remove errors (appear as NA in the results list)
@@ -1215,7 +1366,29 @@ makeControl_df <- function(x = list() , dist_index = 1){
 
 }
 
+# Mar 8th
+# takes output of run_silh_k for random n_genes
+# umap_stats correspond to the clustering we want to test against the control experiment
+#
+parsePvalues <- function(control_experiment = list(), umap_stats = data.frame() ){
 
+  # 1. Make df from the long list run
+  control_28_clusters<-control_experiment %>% makeControl_df()
+  # 2. Compute the p-vals for the target pathway df
+  final_stats_pathway<- cluster_pvals(umap_stats, control_28_clusters) %>% arrange(p_vals)
+  # 3. Compute the p-vals for the null df (what does this actually mean)
+  # This distribution considers a cluster across ALL samplings
+  # it gives us the p-value for an individual cluster when compared to all possible
+  # clusterings for samples of size n_genes
+  control_pvals <-cluster_pvals(control_28_clusters, control_28_clusters) %>% arrange(p_vals)
+  control_pvals <- control_pvals %>% mutate(adj_pval = p.adjust(p_vals, method ="BH"))
+
+  final_stats_pathway <- final_stats_pathway %>% mutate(adj_pval = p.adjust(p_vals, method ="BH"))
+  final_stats_pathway$batch = 0
+  final_stats_pathway$adj_pval[final_stats_pathway$adj_pval<10^-6] = 10^-6
+
+  return(list(final_stats_pathway,control_pvals))
+}
 
 runAllControls <- function(experiment = 'hvg'){
 
@@ -1270,4 +1443,243 @@ runAllControls <- function(experiment = 'hvg'){
         geom_line(data = mean_control_ecdf, aes(x = dist_axis, y = adj_pval), size = 1.5 )  +
         ylab("Fraction of profiles") + xlab("Adj p-value") +
         ggtitle("Motif enrichment in pathway") + coord_cartesian(xlim=c(0.005,1))
+}
+
+
+# Mar 8th
+# go through different clustering results and compare to the random distribution
+# this will use hclust as the control for the random sets of genes
+makeControlDist <- function(final_umap_stats = c(),
+                        cells_include = master_recursive$cell_id, seurat_obj = c() ,
+                        clustering_method = 'ward.D2' ,
+                        k_runs = 100){
+
+    # 1. For a given clustering result compute the null distribution
+    # 2. Generate both data.frames with p-values
+      k = final_umap_stats$motif_label %>% unique() %>% length # get the k value automatically
+
+      rand_pathways = list()
+      for(i in 1:k_runs)
+          rand_pathways[[i]]  = sample(row.names(master_seurat), length(this_pathway))
+
+      rand_silh_all  = lapply(rand_pathways, k = k, silh_run_hclust,
+      										cells_include = cells_include, master_seurat = seurat_obj,
+      										clust_method = clustering_method )
+
+
+
+      pval_res = parsePvalues(control_experiment = rand_silh_all,
+      												umap_stats = final_umap_stats)
+      stats_pathway = pval_res[[1]]
+      control_p = pval_res[[2]]
+
+      list_grobs = makeStatPlots(stats_pathway, control_p)
+
+      return(list(stats_pathway, control_p, list_grobs) )
+
+
+}
+
+# ggplots for comparing clustering results as umpa stats object (in a list)
+# agains the null distribution with a given k
+makeStatPlots<-function(final_stats_pathway,control_pvals, id = 'recursive') {
+
+      # output of makeControl_df(..) # see above
+
+    final_k = final_stats_pathway$motif_label %>% unique %>% length
+
+    # output of makeControl_df(..) # see above
+    p1  = ggplot(control_pvals, aes(x = ms, y = umap_dist)) +
+        stat_density_2d(aes(fill =..level..), geom = "polygon") +
+        theme(text = element_text(size =20)) +
+        geom_point(data=final_stats_pathway, aes(x = ms, y=umap_dist, size = n), color = "red") +
+    		ggtitle(paste('Clustering stats k =',final_k, id) )
+
+    # output of makeControl_df(..) # see above
+    p2  = ggplot(control_pvals, aes(x = umap_dist, y = n )) +
+        stat_density_2d(aes(fill =..level..), geom = "polygon") +
+        theme(text = element_text(size =20)) +
+        geom_point(data=final_stats_pathway, aes(x = umap_dist, y=n, size = ms), color = "red") +
+        ggtitle('Cluster size' )
+
+    # output of makeControl_df(..) # see above
+    p4  = ggplot(control_pvals, aes(x = ms, y = n)) +
+        stat_density_2d(aes(fill =..level..), geom = "polygon") +
+        theme(text = element_text(size =20)) +
+        geom_point(data=final_stats_pathway, aes(x = ms, y=n, size = umap_dist), color = "red") +
+        ggtitle('N Cell types' )
+
+
+
+
+    sig_clusters = sum(final_stats_pathway$adj_pval <0.05)
+
+    final_stats_pathway$plot_label = as.character(final_stats_pathway$motif_label)
+    final_stats_pathway$plot_label[ final_stats_pathway$adj_pval >=0.05] = ""
+
+    p3 = final_stats_pathway %>% ggplot(aes(x = n, y = -log(adj_pval), size = umap_dist)) +
+    	geom_point() + theme_minimal() + theme(text = element_text(size = 20 )) +
+    	geom_hline(yintercept=-log(0.05) , linetype="dashed",  color = "red", size=1) +
+    	ggtitle(paste(sig_clusters, "clusters with sig p value")) + labs(size="Dist PCA")
+    p3 = p3 + geom_text_repel(aes(label = plot_label),size = 3.5)
+
+    return(list(p1,p2,p3, p4))
+
+
+}
+
+# Mar 8th
+# after running control
+# Make umap colored by motif (only significant ones -- as per p_value < 0.05 )
+umap_motifPlot <- function(control_list = list() ,
+													 master_hclust_list = list(), p = 1, sig_motifs = c() ){
+	# UMAP coordinates in master data.frame
+	umap_df = master_hclust_list[[p]]
+	umap_df$col_motif = umap_df$motif_label
+
+	umap_df$col_motif[!umap_df$motif_label %in% sig_motifs] = 0
+	umap_df$col_motif <- as.character(umap_df$col_motif )
+
+
+	dot_colors = makeQualitativePal(length(unique(umap_df$col_motif)))
+	dot_colors[1] ="#D3D3D3"
+
+	p4 = umap_df %>%  ggplot(aes(x = UMAP_1,y = UMAP_2,color = col_motif)) +
+	    geom_point() + scale_color_manual(values = dot_colors) +
+	    theme_minimal() + theme(text = element_text(size = 25)) + coord_cartesian(xlim= c(-5,7),ylim = c(-10,5))
+
+
+  # Create a text
+  font_size = 18
+  grob <- grobTree(textGrob("Epiblast", x=0.22,  y=0.34, hjust=0,
+    gp=gpar(col="black", fontsize=font_size, fontface="italic")))
+  # Plot
+  p4 = p4 + annotation_custom(grob)
+
+
+  grob <- grobTree(textGrob("Endothelial", x=0.8,  y=0.83, hjust=0,
+    gp=gpar(col="black", fontsize=font_size, fontface="italic")))
+  # Plot
+  p4 = p4 + annotation_custom(grob)
+
+
+  grob <- grobTree(textGrob("Blood", x=0.7,  y=0.66, hjust=0,
+    gp=gpar(col="black", fontsize=font_size, fontface="italic")))
+  # Plot
+  p4 = p4 + annotation_custom(grob)
+
+
+  grob <- grobTree(textGrob("Endoderm", x=0.01,  y=0.5, hjust=0,
+    gp=gpar(col="black", fontsize=font_size, fontface="italic")))
+  # Plot
+  p4 = p4 + annotation_custom(grob)
+
+
+  grob <- grobTree(textGrob("Mesoderm", x=0.2,  y=0.6, hjust=0,
+    gp=gpar(col="black", fontsize=font_size, fontface="italic")))
+  # Plot
+  p4 = p4 + annotation_custom(grob)
+
+  grob <- grobTree(textGrob("Muscle", x=0.2,  y=0.73, hjust=0,
+    gp=gpar(col="black", fontsize=font_size, fontface="italic")))
+  # Plot
+  p4 = p4 + annotation_custom(grob)
+
+
+  grob <- grobTree(textGrob("Mesenchymal", x=0.44,  y=0.86, hjust=0,
+    gp=gpar(col="black", fontsize=font_size, fontface="italic")))
+  # Plot
+  p4 = p4 + annotation_custom(grob)
+
+  grob <- grobTree(textGrob("Epithelium", x=0.08,  y=0.83, hjust=0,
+    gp=gpar(col="black", fontsize=font_size, fontface="italic")))
+  # Plot
+  p4 = p4 + annotation_custom(grob)
+
+
+
+
+	return(p4)
+}
+
+# Mar 9th
+# make a data frame for a given pathway
+# starting from the master_hclust_list
+makeTidySummary <- function(master_df = data.frame(),  this_pathway  = c() ){
+
+  master_df %>% gather(key ="gene", value ="expr", this_pathway ) -> tidy_pathway
+
+  tidy_pathway %>% group_by(motif_label,gene) %>% summarise(mean_expr = mean(expr), sd_expr = sd(expr), n_cell_types = n()) -> tidy_summary
+
+  return(tidy_summary)
+
+}
+
+# Mar 9th
+# barplot from tidy data.frame
+# average expression for a single motif
+
+plotMotifBarplot<-function(which_motif, tidy_summary = data.frame() ){
+  df <- tidy_summary %>% dplyr::filter(motif_label ==which_motif)
+  df$gene <- factor(df$gene, levels = this_pathway)
+  p_bar <- df %>%
+      ggplot(aes(x = gene, y = mean_expr)) +
+        geom_col(alpha = 0.7, position = 'dodge', fill = '#4B577C') +
+        geom_errorbar(aes(ymin = mean_expr - sd_expr, ymax = mean_expr + sd_expr), width =0.2, colour = 'gray', position  = position_dodge(0.9)) +
+        theme_Publication() +  theme(axis.text.x = element_text(angle = 40, vjust = 0.9, hjust=1))  +
+        theme(text = element_text(size = 12)) +  coord_cartesian(ylim = c(0,1))  +
+        ggtitle(paste("Motif ", which_motif, ': N cell types = ', df$n_cell_types %>% unique, sep=""))
+  return(p_bar)
+}
+
+
+# Plot motif heatmap
+# using superheat function
+# Mar 9th
+makeMotifHeatmap <- function(tidy_summary = data.frame() ,
+														 sig_motifs = c(), this_pathway  = c() ,
+														 plot_dendrogram = T , type = 'size'){
+
+			tidy_summary %>% dplyr::filter(motif_label %in% sig_motifs) %>%
+					pivot_wider(names_from = gene, values_from = mean_expr, -sd_expr) -> motif_matrix
+
+			motif_matrix %>% tibble::column_to_rownames(var = 'motif_label') -> motif_matrix
+			x =  motif_matrix[,this_pathway]
+			if(plot_dendrogram){
+				p5  = superheat(x[,this_pathway],
+				           scale = F,
+				           heat.col.scheme = 'viridis',
+				           pretty.order.rows =  T,
+				           row.dendrogram = T,
+
+				           left.label.col = 'white',
+				           bottom.label.text.angle = 90)
+			}else{
+
+       if(type=='silh'){
+          yr = motif_matrix$ms
+          yr.axis.name = 'Silhouette'
+          yr.plot.type = 'scatter'
+       }else if(type=='size'){
+          yr = log10(motif_matrix$n_cell_types)
+          yr.axis.name = 'N cell types (log)'
+          yr.plot.type = 'bar'
+       }
+
+			 p5 = superheat( x[,this_pathway],
+	           scale = F,
+	           heat.col.scheme = 'viridis',
+	           pretty.order.rows =  T,
+						# side plot
+	           yr = yr,
+	           yr.axis.name = yr.axis.name,
+	           yr.plot.type = yr.plot.type,
+
+						 left.label.col = 'white',
+	           bottom.label.text.angle = 90)
+
+			}
+
+			return(p5)
+
 }
