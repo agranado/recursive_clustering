@@ -1532,7 +1532,8 @@ makeStatPlots<-function(final_stats_pathway,control_pvals, id = 'recursive') {
 # after running control
 # Make umap colored by motif (only significant ones -- as per p_value < 0.05 )
 umap_motifPlot <- function(control_list = list() ,
-													 master_hclust_list = list(), p = 1, sig_motifs = c() ){
+													 master_hclust_list = list(), p = 1, sig_motifs = c(), point_size = 3,
+                            skip_colors = 0){
 	# UMAP coordinates in master data.frame
 	umap_df = master_hclust_list[[p]]
 	umap_df$col_motif = umap_df$motif_label
@@ -1541,16 +1542,16 @@ umap_motifPlot <- function(control_list = list() ,
 	umap_df$col_motif <- as.character(umap_df$col_motif )
 
 
-	dot_colors = makeQualitativePal(length(unique(umap_df$col_motif)))
+	dot_colors = makeQualitativePal(length(unique(umap_df$col_motif)), rand_order = F, skip = skip_colors, tail_colors = F )
 	dot_colors[1] ="#D3D3D3"
 
 	p4 = umap_df %>%  ggplot(aes(x = UMAP_1,y = UMAP_2,color = col_motif)) +
-	    geom_point() + scale_color_manual(values = dot_colors) +
+	    geom_point(size = point_size) + scale_color_manual(values = dot_colors) +
 	    theme_minimal() + theme(text = element_text(size = 25)) + coord_cartesian(xlim= c(-5,7),ylim = c(-10,5))
 
 
   # Create a text
-  font_size = 18
+  font_size = 25
   grob <- grobTree(textGrob("Epiblast", x=0.22,  y=0.34, hjust=0,
     gp=gpar(col="black", fontsize=font_size, fontface="italic")))
   # Plot
