@@ -1542,7 +1542,7 @@ umap_motifPlot <- function(control_list = list() ,
 	umap_df$col_motif <- as.character(umap_df$col_motif )
 
 
-	dot_colors = makeQualitativePal(length(unique(umap_df$col_motif)), rand_order = F, skip = skip_colors, tail_colors = F )
+	dot_colors = makeQualitativePal(length(unique(umap_df$col_motif)), rand_order = T, skip = skip_colors, tail_colors = F )
 	dot_colors[1] ="#D3D3D3"
 
 	p4 = umap_df %>%  ggplot(aes(x = UMAP_1,y = UMAP_2,color = col_motif)) +

@@ -71,11 +71,16 @@ min.maxNorm<-function(x){
 # qualitative palette
 
 
-makeQualitativePal <- function(n, rand_order = T, skip = 0, tail_colors = F){
+makeQualitativePal <- function(n, rand_order = F, skip = 0, tail_colors = F, glasbey_use =T){
 
   library(RColorBrewer)
-  qual_col_pals = brewer.pal.info[brewer.pal.info$category == 'qual',]
-  col_vector = unlist(mapply(brewer.pal, qual_col_pals$maxcolors, rownames(qual_col_pals))) # only 70 qualitative colors 
+  if(glasbey_use){
+    col_vector=glasbey
+    names(col_vector)<- NULL
+  }else{
+    qual_col_pals = brewer.pal.info[brewer.pal.info$category == 'qual',]
+    col_vector = unlist(mapply(brewer.pal, qual_col_pals$maxcolors, rownames(qual_col_pals))) # only 70 qualitative colors
+  }
   #pie(rep(1,n), col=sample(col_vector, n))
   if(n<=length(col_vector)){
       if(rand_order ==T){
