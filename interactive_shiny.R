@@ -19,13 +19,21 @@ makeMainDataFrame <-function(this_pathway,master_seurat =c() ){
   return(devel_adult)
 }
 
-normalizedDevel <- function(this_pathway, sat_val =0.99, fill_zero_rows = F , master_seurat = c() ){
+normalizedDevel <- function(this_pathway, sat_val =0.99, fill_zero_rows = F , master_seurat = c(), which_datasets = 'both' ){
     devel_adult <- makeMainDataFrame(this_pathway, master_seurat) #pink variables go to Shiny
 
     if(! 'cell_id' %in% names(master_seurat@meta.data))
       devel_adult %>% mutate(cell_id = paste(global_cluster, dataset,sep="_")) -> devel_adult
 
+    # Make a data.frame considering only only developmental profiles
+    if(which_datasets == 'devel'){
+      devel_adult <- devel_adult %>% dplyr::filter(dataset %in% c("E6.5_8.5_Chan" ,"E6.5_8.5_Marioni","E5.5_Nowotschin" ,"E9.5_11.5_Tang" ,"Forelimb_E10.5_15.0") )
+    }else if(which_datasets=='adult'){
+      devel_adult <- devel_adult %>% dplyr::filter(!dataset %in% c("E6.5_8.5_Chan" ,"E6.5_8.5_Marioni","E5.5_Nowotschin" ,"E9.5_11.5_Tang" ,"Forelimb_E10.5_15.0") )
+    }
+
     x =devel_adult[,this_pathway]
+
     max_sat_gene = apply(x, 2, quantile, sat_val) # starts from x
 
 

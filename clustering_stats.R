@@ -5,6 +5,175 @@
 library(gridExtra)
 library(stylo)
 library(cluster)
+
+#Apr 2021
+# Quick pipeline
+# Filters non-expressing cell types
+# Filters also for devel or adult profiles
+
+k_final = 25
+
+genesPathway <- function(which_pathway = 'Notch'){
+
+  this_pathway = all_pathways %>% dplyr::filter(pathway ==which_pathway ) %>% pull(gene)
+  this_pathway = this_pathway[which(this_pathway %in% row.names(master_seurat))]
+
+}
+
+# 1. create devel/adult data.frame
+# 2. Filter cell types with at least 2 expressed genes
+# 3. Cluster cosine + ward.D2
+# 4. returns clustered data.frame
+
+quickPipeline <- function(which_pathway = 'Notch', master_seurat = c(),
+                        k_final = 25,
+                        min_genes_on = 1, min_expr = 0.2,
+                        which_profiles = 'devel',
+                        rand_control = F
+                         ){
+        if(!rand_control){
+          this_pathway = all_pathways %>% dplyr::filter(pathway ==which_pathway ) %>% pull(gene)
+        }else{
+          this_pathway = which_pathway # random set directly as input
+        }
+        this_pathway = this_pathway[which(this_pathway %in% row.names(master_seurat))]
+
+
+
+        df_devel <- normalizedDevel(this_pathway,sat_val = 0.99,
+                fill_zero_rows = F, master_seurat = master_seurat ,
+                which_datasets = which_profiles)
+
+        df_devel %>% mutate(cell_type = paste(global_cluster, '--',Tissue,': ', cell_ontology_class,'-', age, sep="")) -> df_devel
+        df_devel$genes_on = rowSums(df_devel[,this_pathway]>min_expr )
+
+        row.names(df_devel) <- df_devel$cell_type
+
+        df_devel %>% dplyr::filter(genes_on>min_genes_on ) -> df_devel
+
+        # Heatmap
+        p = pheatmap(df_devel[,this_pathway ],
+                     annotation_row = df_devel %>% select(dataset, Cell_class),
+                     annotation_colors = colors_1206, show_rownames = T, fontsize = 5,
+                     cutree_rows = k_final, clustering_method = 'ward.D2',
+                      clustering_distance_rows = dist.cosine(as.matrix(df_devel[,this_pathway])),
+                     cluster_cols = F, silent = T)
+
+
+        ####################
+        cos_labels = cutree( p$tree_row, k = k_final)
+        df_devel$class_label = cos_labels
+
+
+        df_devel$class_label <- as.numeric(df_devel$class_label)
+
+        df_devel %>% gather(key = 'gene', value ='expression', this_pathway ) %>%
+            group_by(class_label, gene) %>%
+            summarise(mean_expr = mean(expression), n_cell_types = n()) %>%
+            spread(gene, mean_expr)  %>% tibble::column_to_rownames(var  ="class_label") -> x
+        # if available
+        return(list('matrix' = x, 'df_devel' = df_devel) )
+}
+
+# data is already clustered by pathway
+# only for the cell types in df_devel -- those with a pathway label
+# Mar 25
+global_clusterig<- function(df_devel = data.frame() , master_seurat = c() ,
+														k_final = 25,n_pcs = 100 ){
+        	# cells are filtered
+        	df_devel$class_label <- df_devel$class_label %>% as.character()
+
+        	# pathway colors
+        	colors_1206$class_label = makeQualitativePal(length(df_devel$class_label %>% unique))
+        	names(colors_1206$class_label) <- df_devel$class_label %>% unique
+
+        	# PCA embedding
+        	# Number of principal components
+          # umap_coords by default uses cell_id as the row.name
+        	umap_coords<- Embeddings(master_seurat,reduction = 'pca')
+        	umap_coords <- umap_coords[,1:n_pcs]
+
+        	# use only those cell that have a notch profile
+        	scaled_data = umap_coords[df_devel$cell_id, ]
+        	row.names(scaled_data)<-df_devel$cell_type # row name is the full cell type
+
+        	p_global = pheatmap(scaled_data %>% t ,
+        				annotation_col = df_devel %>% dplyr::select( age,dataset,Tissue,Cell_class, class_label),
+        				annotation_colors = colors_1206 ,
+        				clustering_method = 'ward.D2',
+        				cutree_cols = k_final, show_rownames = F,
+        				show_colnames = F, fontsize = 12,silent= T)
+
+         # for each pathway label, we calculate the mean distance
+         # in the PCA space for the cell types in that label
+         sapply(1:k_final, function(x){
+            class_cells = df_devel$cell_id[df_devel$class_label==x]
+            umap_coords[class_cells,] %>% dist %>% as.matrix -> dist_class
+
+            dist_class[upper.tri(dist_class)] %>% mean()
+
+        }) -> diversity_pathway
+
+        #global stats // transcriptome
+        # same idea, we use the global label -----
+        global_labels = cutree(p_global$tree_col, k = k_final)
+        df_devel$global_label = global_labels
+
+        sapply(1:k_final, function(x){
+            class_cells = df_devel$cell_id[df_devel$global_label==x]
+            umap_coords[class_cells,] %>% dist %>% as.matrix -> dist_class
+
+            dist_class[upper.tri(dist_class)] %>% mean()
+
+        }) -> diversity_global
+
+        # transcriptome
+        df_devel %>% group_by(global_label) %>% count %>% as.data.frame() -> global_stats
+        global_stats$diversity = diversity_global
+
+        # pathway
+        df_devel %>% group_by(class_label) %>% count %>% as.data.frame() %>%
+        	mutate(class_label = as.numeric(class_label)) %>%
+        	arrange(class_label ) -> path_stats
+        path_stats$diversity = diversity_pathway
+
+
+        path_stats$type = "pathway"
+        global_stats$type = "transcriptome"
+
+        path_stats %>% rename(label = class_label) -> path_stats
+        global_stats %>% rename(label = global_label) -> global_stats
+
+        # rank the profiles by diversity
+        path_stats$rank = rank(path_stats$diversity)
+
+        return(list('pathway' = path_stats, 'global' = global_stats))
+}
+
+
+make_superheat<- function(x, which_pathway ='Notch'){
+
+    this_pathway = genesPathway(which_pathway)
+    # add text to mark expression values above a threshold
+    text_ann = matrix("", nrow = dim(x)[1],ncol = length(this_pathway))
+
+    text_ann[x[,this_pathway] >= 0.1] = "+"
+
+    superheat(x[,this_pathway],
+              pretty.order.rows = T,
+              bottom.label.text.angle = 90,
+              yr  = x$n_cell_types,
+              yr.axis.name = 'N cell types',
+              yr.point.size = 3,
+
+              left.label.size = 0.4,left.label.text.size = 5,
+              left.label.text.alignment = "left",
+              X.text = text_ann,
+              X.text.size = 4,
+              X.text.col = 'white')
+}
+
+
 # Mar 2021
 # silhouette score scanning for different values of k for the full pathway list
 # specify the number of random sets of genes to compute the expected distribution of silhouette scores
