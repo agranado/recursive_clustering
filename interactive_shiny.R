@@ -30,7 +30,7 @@ normalizedDevel <- function(this_pathway, sat_val =0.99, fill_zero_rows = F , ma
       devel_adult <- devel_adult %>% dplyr::filter(dataset %in% c("E6.5_8.5_Chan" ,"E6.5_8.5_Marioni","E5.5_Nowotschin" ,"E9.5_11.5_Tang" ,"Forelimb_E10.5_15.0") )
     }else if(which_datasets=='adult'){
       devel_adult <- devel_adult %>% dplyr::filter(!dataset %in% c("E6.5_8.5_Chan" ,"E6.5_8.5_Marioni","E5.5_Nowotschin" ,"E9.5_11.5_Tang" ,"Forelimb_E10.5_15.0") )
-    }
+    } # if which_datasets == 'both' no filter is applied. 
 
     x =devel_adult[,this_pathway]
 

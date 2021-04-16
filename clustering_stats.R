@@ -7,29 +7,83 @@ library(stylo)
 library(cluster)
 
 #Apr 2021
-# Quick pipeline
+# Quick pipeline functions
 # Filters non-expressing cell types
 # Filters also for devel or adult profiles
 
-k_final = 25
 
 genesPathway <- function(which_pathway = 'Notch'){
 
   this_pathway = all_pathways %>% dplyr::filter(pathway ==which_pathway ) %>% pull(gene)
   this_pathway = this_pathway[which(this_pathway %in% row.names(master_seurat))]
 
+  return(this_pathway)
 }
 
 # 1. create devel/adult data.frame
 # 2. Filter cell types with at least 2 expressed genes
 # 3. Cluster cosine + ward.D2
 # 4. returns clustered data.frame
-
+#
+# quickPipeline_ <- function(which_pathway = 'Notch', master_seurat = c(),
+#                         k_final = 25,
+#                         min_genes_on = 1, min_expr = 0.2,
+#                         which_profiles = 'devel',
+#                         rand_control = F,
+#                         silent_plot = T
+#                          ){
+#         if(!rand_control){
+#           this_pathway = all_pathways %>% dplyr::filter(pathway ==which_pathway ) %>% pull(gene)
+#         }else{
+#           this_pathway = which_pathway # random set directly as input
+#         }
+#         this_pathway = this_pathway[which(this_pathway %in% row.names(master_seurat))]
+#
+#
+#
+#         df_devel <- normalizedDevel(this_pathway,sat_val = 0.99,
+#                 fill_zero_rows = F, master_seurat = master_seurat ,
+#                 which_datasets = which_profiles)
+#
+#         df_devel %>% mutate(cell_type = paste(global_cluster, '--',Tissue,': ', cell_ontology_class,'-', age, sep="")) -> df_devel
+#         df_devel$genes_on = rowSums(df_devel[,this_pathway]>min_expr )
+#
+#         row.names(df_devel) <- df_devel$cell_type
+#
+#         df_devel %>% dplyr::filter(genes_on>min_genes_on ) -> df_devel
+#
+#         # Heatmap
+#         p = pheatmap(df_devel[,this_pathway ],
+#                      annotation_row = df_devel %>% select(dataset, Cell_class),
+#                      annotation_colors = colors_1206, show_rownames = T, fontsize = 5,
+#                      cutree_rows = k_final, clustering_method = 'ward.D2',
+#                       clustering_distance_rows = dist.cosine(as.matrix(df_devel[,this_pathway])),
+#                      cluster_cols = F, silent = silent_plot)
+#
+#
+#         ####################
+#         cos_labels = cutree( p$tree_row, k = k_final)
+#         df_devel$class_label = cos_labels
+#
+#
+#         df_devel$class_label <- as.numeric(df_devel$class_label)
+#
+#         df_devel %>% gather(key = 'gene', value ='expression', this_pathway ) %>%
+#             group_by(class_label, gene) %>%
+#             summarise(mean_expr = mean(expression), n_cell_types = n()) %>%
+#             spread(gene, mean_expr)  %>% tibble::column_to_rownames(var  ="class_label") -> x
+#         # if available
+#         return(list('matrix' = x, 'df_devel' = df_devel) )
+# }
+#
 quickPipeline <- function(which_pathway = 'Notch', master_seurat = c(),
                         k_final = 25,
                         min_genes_on = 1, min_expr = 0.2,
                         which_profiles = 'devel',
-                        rand_control = F
+                        rand_control = F,
+                        silent_plot = T,
+                        manual_filter_cells = c(),
+                        verbose = F
                          ){
         if(!rand_control){
           this_pathway = all_pathways %>% dplyr::filter(pathway ==which_pathway ) %>% pull(gene)
@@ -49,7 +103,17 @@ quickPipeline <- function(which_pathway = 'Notch', master_seurat = c(),
 
         row.names(df_devel) <- df_devel$cell_type
 
-        df_devel %>% dplyr::filter(genes_on>min_genes_on ) -> df_devel
+        # two types of filtering. Either by min expression of pathway genes. Default
+        # or by user-specified list of cell types. For control purposes
+        if(length(manual_filter_cells)==0){
+          df_devel %>% dplyr::filter(genes_on>min_genes_on ) -> df_devel
+        }else{
+          df_devel %>% dplyr::filter(cell_id %in% manual_filter_cells) -> df_devel
+          # minority of gene sets will have non-expressing cells
+          # this happens very rarely and only 1 or 2 cells will have no expression, so we can remove them
+          expressing_cells =df_devel$cell_id[rowSums(df_devel[,this_pathway])>0]
+          df_devel %>% dplyr::filter(cell_id %in% expressing_cells) -> df_devel
+        }
 
         # Heatmap
         p = pheatmap(df_devel[,this_pathway ],
@@ -57,7 +121,7 @@ quickPipeline <- function(which_pathway = 'Notch', master_seurat = c(),
                      annotation_colors = colors_1206, show_rownames = T, fontsize = 5,
                      cutree_rows = k_final, clustering_method = 'ward.D2',
                       clustering_distance_rows = dist.cosine(as.matrix(df_devel[,this_pathway])),
-                     cluster_cols = F, silent = T)
+                     cluster_cols = F, silent = silent_plot)
 
 
         ####################
@@ -75,6 +139,29 @@ quickPipeline <- function(which_pathway = 'Notch', master_seurat = c(),
         return(list('matrix' = x, 'df_devel' = df_devel) )
 }
 
+# calls the above function
+# clusters the pathway genes and makes the corresponding heatmap
+quickHeatmap <- function(which_pathway = 'Bmp', master_seurat = c() , filter_profiles = 'adult', k = 36, silent = F,
+                            min_genes_ = 1, min_expr_gene = 0.2){
+    this_pathway = genesPathway(which_pathway )
+    res_list = quickPipeline(which_pathway = which_pathway,
+                             master_seurat = master_seurat,
+                             which_profiles = filter_profiles,
+                             k_final = k, manual_filter_cells = c() ,verbose = T,
+                            min_genes_on = min_genes_, min_expr = min_expr_gene)
+
+    df_devel = res_list$df_devel
+    pheatmap(df_devel[,this_pathway ],
+             annotation_row = df_devel %>% select(dataset, Cell_class),
+             annotation_colors = colors_1206, show_rownames = F, fontsize = 12,
+             cutree_rows = k, clustering_method = 'ward.D2',
+             clustering_distance_rows = dist.cosine(df_devel[,this_pathway ] %>% as.matrix ), silent = silent,
+            main = paste(which_pathway, '--', dim(df_devel)[1],'cell types'))
+
+    return(df_devel)
+}
+
+#
 # data is already clustered by pathway
 # only for the cell types in df_devel -- those with a pathway label
 # Mar 25
@@ -104,26 +191,37 @@ global_clusterig<- function(df_devel = data.frame() , master_seurat = c() ,
         				cutree_cols = k_final, show_rownames = F,
         				show_colnames = F, fontsize = 12,silent= T)
 
-         # for each pathway label, we calculate the mean distance
+                # for each pathway label, we calculate the mean distance
          # in the PCA space for the cell types in that label
+         k_final = length(df_devel$class_label %>% unique )
          sapply(1:k_final, function(x){
-            class_cells = df_devel$cell_id[df_devel$class_label==x]
-            umap_coords[class_cells,] %>% dist %>% as.matrix -> dist_class
+             class_cells = df_devel$cell_id[df_devel$class_label==x]
+             if(length(class_cells)>1){
+             umap_coords[class_cells,] %>% dist %>% as.matrix -> dist_class
 
-            dist_class[upper.tri(dist_class)] %>% mean()
+             return(dist_class[upper.tri(dist_class)] %>% mean())
 
-        }) -> diversity_pathway
+             }else{
+                 return(0)
+             }
+
+         }) -> diversity_pathway
 
         #global stats // transcriptome
         # same idea, we use the global label -----
         global_labels = cutree(p_global$tree_col, k = k_final)
         df_devel$global_label = global_labels
-
+        # singletons have diversity = 0 by definition
         sapply(1:k_final, function(x){
             class_cells = df_devel$cell_id[df_devel$global_label==x]
+            if(length(class_cells)>1){
             umap_coords[class_cells,] %>% dist %>% as.matrix -> dist_class
 
-            dist_class[upper.tri(dist_class)] %>% mean()
+            return(dist_class[upper.tri(dist_class)] %>% mean())
+          }else{
+            return(0)
+          }
+
 
         }) -> diversity_global
 
@@ -150,6 +248,286 @@ global_clusterig<- function(df_devel = data.frame() , master_seurat = c() ,
         return(list('pathway' = path_stats, 'global' = global_stats))
 }
 
+# only for the cell types in df_devel -- those with a pathway label
+# Mar 25
+positive_control<- function(df_devel = data.frame() , master_seurat = c() ,
+														n_pcs = 100 , n_random = 100 ){
+        	# cells are filtered
+        	df_devel$class_label <- df_devel$class_label %>% as.character()
+          k_final = length(df_devel$class_label %>% unique )
+        	# PCA embedding
+        	# Number of principal components
+          # umap_coords by default uses cell_id as the row.name
+        	umap_coords<- Embeddings(master_seurat,reduction = 'pca')
+        	umap_coords <- umap_coords[,1:n_pcs]
+
+          control_list = list()
+          for( i in 1:n_random){
+             df_devel$class_label = sample(df_devel$class_label)
+             # for each pathway label, we calculate the mean distance
+             # in the PCA space for the cell types in that label
+             sapply(1:k_final, function(x){
+                class_cells = df_devel$cell_id[df_devel$class_label==x]
+                if(length(class_cells)>1){
+                umap_coords[class_cells,] %>% dist %>% as.matrix -> dist_class
+
+                return(dist_class[upper.tri(dist_class)] %>% mean())
+
+              }else{
+                return(0)
+              }
+
+            }) -> diversity_pathway
+
+
+            # pathway
+            df_devel %>% group_by(class_label) %>% count %>% as.data.frame() %>%
+            	mutate(class_label = as.numeric(class_label)) %>%
+            	arrange(class_label ) -> path_stats
+            path_stats$diversity = diversity_pathway
+
+            path_stats$type = "pathway"
+            path_stats %>% rename(label = class_label) -> path_stats
+            # rank the profiles by diversity
+            path_stats$rank = rank(path_stats$diversity)
+
+            control_list[[i]] = path_stats
+        }
+        return(control_list )
+}
+
+
+
+# null_dist: list of genes to sample from to generate the null distribution
+# which_pathway: pathway name (used for number of genes)
+# which_k: optimal k found for the pathway-- test random genes using this same k
+# seurat_obj: fetchData from this seurat
+# n_rand: how many random sets of genes
+# # filter_profile: 'devel' or 'adult' to filter cell types before running the pipeline.
+# controlDiversity_<-function(null_dist = c(), which_pathway = c(), which_k = c(), seurat_obj= c() ,
+# 													 n_rand=100, filter_profile = 'adult', verbose = F){
+# 	control_stats = list()
+#
+# 	for(i in 1:n_rand ){
+#
+# 	    this_pathway = genesPathway(which_pathway)
+# 	    rand_pathway = sample(null_dist, length(this_pathway))
+# 	    res_list = quickPipeline(which_pathway = rand_pathway,
+# 	                             master_seurat = seurat_obj,
+# 	                             which_profiles =filter_profile,
+# 	                             k_final = which_k,
+# 	                             rand_control = T)
+#
+# 	    stats_list = global_clusterig(df_devel = res_list$df_devel,
+# 	                                  master_seurat = seurat_obj,
+# 	                                  k_final = which_k)
+# 	    control_stats[[i]] = stats_list
+#
+# 	}
+#
+# 	# make control_df
+# 	do.call(rbind,lapply(control_stats, function(x){rbind(x$pathway %>% select(-rank), x$global)})) -> control_df
+#
+#   #control_df %>% dplyr::filter(type=='pathway') -> control_df
+# 	return(control_df)
+#
+# }
+#
+# filter_profile: 'devel' or 'adult' to filter cell types before running the pipeline.
+controlDiversity<-function(null_dist = c(), which_pathway = c(), which_k = c(), seurat_obj= c() ,
+													 n_rand=100, filter_profile = 'adult',
+                            filter_manual_cells = c() , verbose = F){
+	control_stats = list()
+
+
+	    this_pathway = genesPathway(which_pathway)
+
+      rand_list = list()
+      for(rr in 1:n_rand)
+        rand_list[[rr]] = sample(null_dist, length(this_pathway))
+
+      # Run control pipeline in parallel for the whole list of random pathways
+      # specify the manual list of cell types: overrides the filtering by min.expression
+      control_stats = mclapply(rand_list, parallel_pipeline, cut_k = which_k,
+                            seurat_master = seurat_obj, manual_cell_types = filter_manual_cells, profile_filter = filter_profile, mc.cores = 15)
+
+	    # res_list = quickPipeline(which_pathway = rand_pathway,
+	    #                          master_seurat = seurat_obj,
+	    #                          which_profiles =filter_profile,
+	    #                          k_final = which_k,
+	    #                          rand_control = T)
+      #
+	    # stats_list = global_clusterig(df_devel = res_list$df_devel,
+	    #                               master_seurat = seurat_obj,
+	    #                               k_final = which_k)
+	    #control_stats[[i]] = stats_list
+
+
+
+	# make control_df
+	do.call(rbind,lapply(control_stats, function(x){rbind(x$pathway %>% select(-rank), x$global)})) -> control_df
+
+  #control_df %>% dplyr::filter(type=='pathway') -> control_df
+	return(control_df)
+
+}
+
+# Executes negative control in parallel
+# Only works in linux/mac
+# manual_cell_types: user-specified list of cell types to use for clustering
+# this is useful for random sets of genes, to use the same cell types as the pathway such that
+# calculations of diversity are comparable.
+parallel_pipeline<- function(x, cut_k = c(), seurat_master = c(), profile_filter = 'adult' ,
+                            manual_cell_types = c() ){
+    # quickPipeline takes manual_cell_types as the list with cell_ids to include
+    # if empty, the function will filter cell_types based on the expression of the selected genes
+    res_list = quickPipeline(which_pathway = x,
+                         master_seurat = seurat_master,
+                         which_profiles = profile_filter,
+                         k_final = cut_k, manual_filter_cells = manual_cell_types,
+                         rand_control = T)
+
+    stats_list = global_clusterig(df_devel = res_list$df_devel,
+                                  master_seurat = seurat_master,
+                                  k_final = cut_k)
+   return(stats_list)
+}
+
+# Mar31 2021
+# runs the above functions in order for a given pathway
+# Apr 14th updates:
+#  We want to specify the min.expr threshold for each gene to be considered ON
+#  Also, since different pathways comprise different numbers of genes, we want a fraction of the pathway to be ON as opposed to the same number for all pathways
+fullControlPathway <- function(this_pathway = c() ,
+                               k_pathway = c(),
+                               filter_pathway = 'adult',
+                               this_seurat = c(),
+                               null_list = c(),
+                               n_samples = 100,
+                               filter_manual = F,
+                               verbose_output = F,
+                               min_expr_gene = 0.2,
+                               min_genes_ON = 1
+                                ){
+
+     # 1. Run the quick pipeline for the real pathway
+     #    with the specified k (found previously as optimal)
+     res_list = quickPipeline(which_pathway = this_pathway,
+  															master_seurat = this_seurat,
+  															which_profiles = filter_pathway,
+  															k_final = k_pathway, verbose = verbose_output,
+                                min_genes_on = min_genes_ON, min_expr = min_expr_gene,)
+    if(verbose_output)
+      print(paste(this_pathway,": ", dim(res_list$df_devel)[1]," expressing cells" ))
+
+
+
+    # 2. Compute diversity for the cell types containing each of the pathway profiles
+     stats_list = global_clusterig(df_devel = res_list$df_devel,
+                                    master_seurat = this_seurat,
+                                    k_final = k_pathway)
+    #print('Done clustering real pathway')
+    # 3. Negative control: random sets of genes from null list
+    # Note: here we want two types of filtering:
+    #       current: filter cell types based on the expression of the random set
+    #       probably better: filter cell types that express the real pathway so the diversity is comparable
+    # new option to filter the same cell types as the real pathway
+    if(filter_manual){
+      manual_cell_types = res_list$df_devel$cell_id
+    }else{
+      manual_cell_types = c()
+    }
+    # add the filter using filter_manual_cells parameter
+    control_df = controlDiversity(null_dist = null_list,
+    															which_pathway =this_pathway,
+    															which_k = k_pathway, seurat_obj = this_seurat,
+    															n_rand = n_samples, filter_profile = filter_pathway,
+                                  filter_manual_cells = manual_cell_types, verbose = verbose_output)
+    #print(paste('Done clustering ',n_samples,' random sets'))
+    # 4. Positive control: re-distribute pathway profiles in randomly selected cell types.
+    # returns diversity scores only for the fake pathway (no global calculation)
+    pos_control = positive_control(res_list$df_devel, master_seurat = this_seurat,n_random = n_samples )
+      # merge all in data.frame
+    pos_control = do.call(rbind, pos_control )
+    # Split negative control results: pathway (random genes), transcriptome(global diversity)
+    control_df_path = control_df %>% dplyr::filter(type=='pathway')
+    control_df_global = control_df %>% dplyr::filter(type=='transcriptome')
+
+    df_diversity = rbind(data.frame(d =control_df_path$diversity, type ='null dist'), #random sets
+    					 data.frame(d = control_df_global$diversity, type ='transcriptome dist'), #global dendrogram using same cells from random sets
+               data.frame(d = stats_list$pathway$diversity, type = 'pathway'), # actual pathway
+               data.frame(d = stats_list$global$diversity, type = 'transcriptome'), # global dendrogram using the same cells than the real pathway
+               data.frame(d = pos_control$diversity, type ='pos control')) #randomized pathway profiles across cell types
+
+    df_recurrence = rbind(data.frame(d =control_df_path$diversity*control_df_path$n, type ='null dist'),
+           data.frame(d = control_df_global$diversity*control_df_global$n, type ='transcriptome dist'),
+           data.frame(d = stats_list$pathway$diversity*stats_list$pathway$n, type = 'pathway'),
+           data.frame(d = stats_list$global$diversity*stats_list$global$n, type = 'transcriptome'),
+           data.frame(d = pos_control$diversity*pos_control$n, type ='pos control'))
+
+    return(list(diversity= df_diversity, recurrece = df_recurrence ))
+}
+
+# Apr 1 2021
+# plot histograms for the pathway diversity compared to the expected null model
+fullControlPlots <- function(control_res = list(), this_pathway = c() , remove_transcriptome = F){
+
+  # clusteringt the transcriptome for these same cells using the 100PCs
+  # so far the right control is the random sets of HVGs
+  # using 100PCs on the same cells tells us the expected diversity in the cells we are using
+  if(remove_transcriptome)
+    control_res$recurrece %>% dplyr::select(-transcriptome) -> control_res$recurrece
+
+  control_res$recurrece %>% ggplot(aes(x = d, col= type)) + stat_ecdf() +
+    scale_color_ggthemr_d() + ggtitle(this_pathway) +
+    theme(text = element_text(size =20)) +
+    scale_x_continuous(trans='sqrt')-> g1
+
+    control_res$recurrece %>% dplyr::filter(type != 'transcriptome') %>%
+   ggplot( aes(x = d, y = ..density.., fill = type )) +
+   	geom_histogram(position = "identity", alpha = 0.2, bins = 50) +
+   	theme(text = element_text(size = 20 )) + scale_x_continuous(trans='sqrt') -> g2
+
+    return(list(g1,g2))
+
+}
+
+
+# Parameter screen plots
+# test different null models
+pctAbovePlot <- function(p,threshold, plot_margin = 0.1, metric_index = 'recurrece'){
+  plot_colors = makeQualitativePal(5,glasbey_use = F,rand_order = T)
+
+  # threshold = 0.75
+  # p = 1
+
+  for(n in 1:length(null_models)){
+      lapply(null_res_list[[n]][[p]], function(x){
+          # pct of profiles above the 0.9 quantile for the null distribution
+          x[[metric_index]] %>% dplyr::filter(type=='null dist') %>% pull(d) %>% quantile(threshold) -> threshold_quant
+          x[[metric_index]] %>% dplyr::filter(type=='pathway') %>% pull(d) -> pd
+          sum(pd>=threshold_quant)
+
+      }) %>% unlist -> n_above
+      pct_above =n_above/k_var
+      names(pct_above) = k_var
+      if(n==1)
+          plot(k_var, pct_above,type = "o", main = paste(test_pathways[p],'% Profiles above', threshold),
+                            col = plot_colors[n],
+                            ylim = c(0,(1-threshold + plot_margin) ), lwd = 1.5)
+
+      lines(k_var, pct_above, col = plot_colors[n], lwd = 1.5)
+
+
+  }
+  abline(h = 1-threshold)
+  #if(threshold< 0.5) y_legend = (1-threshold + plot_margin) else y_legend = plot_margin
+  y_legend = (1-threshold + plot_margin)
+
+  legend(14,y_legend,legend = c('HVG','HVG4k','Markers1','Markers2','Allgenes'),
+         fill = plot_colors[1:length(null_models)],bg="transparent")
+
+}
 
 make_superheat<- function(x, which_pathway ='Notch'){
 
@@ -173,6 +551,10 @@ make_superheat<- function(x, which_pathway ='Notch'){
               X.text.col = 'white')
 }
 
+## end quick pipeline functions
+
+###############################
+## Silhouette score from scratch
 
 # Mar 2021
 # silhouette score scanning for different values of k for the full pathway list
@@ -198,9 +580,12 @@ silhPathwayControl <- function(x, cells_include = c(), k_max = 100 ,
         dist_mat = dist.cosine(x ) #matrix should not have zero rows
     }
 
+    # Evaluate silhouette score for different values of k
+    # cluster only once, then partition the tree using different values of k
+    master_clustering = hclust(dist_mat, method =clust_method )
     ss = c()
     for(k in 2:k_max){
-        clustering = cutree(hclust(dist_mat, method =clust_method ), k)
+        clustering = cutree(master_clustering, k)
         devel_adult$motif_label = clustering
 
         master_clustered = devel_adult #this has motif label now
@@ -221,7 +606,82 @@ silhPathwayControl <- function(x, cells_include = c(), k_max = 100 ,
     return(ss)
 }
 
+# Apr 2021
+# Calculate optimal number of clusters for a given set of genes based on the silhouette score
+# Performs bootstrap analysis to estimate standard deviation
+silhPathwayBootstrap <- function(x, cells_include = c(), k_max = 100 ,
+                               clust_method = "complete", sat_val = 0.99,
+                               dist_metric = 'euclidean', master_obj = c() , pct_boots = 0.9,
+                               n_boots = 100,
+                               weighted_silhouette =F, control_silh = F){
+    this_pathway = x
+    devel_adult_main <- normalizedDevel(this_pathway, sat_val,
+                                   fill_zero_rows =T, master_seurat = master_obj)
 
+    # # Randomize columns -- destroy gene-gene correlations
+    # if(control_silh)
+    #   devel_adult_main = randomize_columns(devel_adult_main, this_pathway )
+
+    boot_list = list()
+    for(b in 1:n_boots){
+      # Control 1: Bootstrap, sample the list of cell types
+    if(!control_silh){
+        # Filter out cell types that are not expressing.
+        # but sample the list of cell types before to create a boostrap distribution
+        cells_include_boots  = sample(cells_include, round(length(cells_include)*pct_boots) )
+        devel_adult_main %>% dplyr::filter( cell_id %in% cells_include_boots) -> devel_adult
+        row.names(devel_adult) <- devel_adult$global_cluster
+    }else{
+      # Control 2: re-shuffle the data to get a lower bound on silhouette score
+      # by destroying gene-gene correlations but keeping the distribution fo each gene.
+      # Before, we still need to filter for the cell types to include
+      devel_adult_main %>% dplyr::filter( cell_id %in% cells_include) -> devel_adult_main
+      # randomize expression within those cells! We don't want gene expression values from cell types not originally included
+      devel_adult = randomize_columns(devel_adult_main, this_pathway )
+
+    }
+
+      #
+      x = devel_adult[,this_pathway] %>% as.matrix
+      if(dist_metric =="euclidean"){
+          dist_mat = dist(x)
+      }else if(dist_metric=="cosine"){
+          dist_mat = dist.cosine(x ) #matrix should not have zero rows
+      }
+
+      # we compute the clustering only once
+      main_clustering = hclust(dist_mat, method =clust_method )
+      ss = c()
+      for(k in 2:k_max){
+          # cut the tree with different k
+          clustering = cutree(main_clustering, k)
+          devel_adult$motif_label = clustering
+
+          master_clustered = devel_adult #this has motif label now
+          s1<-cluster_silhouette(master_clustered, this_pathway = this_pathway,
+                                 dist = dist_metric ) # original clustering
+          if(!weighted_silhouette){ # normal silhouette score -- average across all clusters
+            ss[k] = mean(s1$ms)
+          }else{
+            # A weighted average to consider the number of cell types within each cluster
+            ss[k] = mean(s1$ms * s1$n)
+          }
+      }
+
+      boot_list[[b]] = ss
+    }
+
+    return(boot_list )
+}
+
+# Negative control
+# destroy gene-gene correlations while keeping individual distributions for each gene the same
+randomize_columns<-function(df, this_pathway){
+    for(i in 1:length(this_pathway))
+        df[,this_pathway[i]] = sample(df[,this_pathway[i]])
+    return(df )
+
+}
 # plot output of silhPathwayControl
 # silhouette score for target pathway + expectation distribution as shaded area
 ggplotPathway <- function(results,type = 'silh', pathway_name =''){
@@ -269,9 +729,9 @@ ggplotPathway <- function(results,type = 'silh', pathway_name =''){
     control.df %>% rbind(bb) %>% ggplot(aes(x = k, y = m_score, color =data)) +
         geom_ribbon(data=control.df, aes(ymin = m_score - sd_score, ymax=m_score + sd_score),alpha = 0.2,color =NA) +
         geom_line(size = 0.5) + theme_classic() + scale_colour_manual(values=c("black", "deeppink3")) + theme(text =element_text(size =15)) +
-        xlab("N clusters") + ylab(paste("Clustering Score (",score.type, ")",sep="")) +
+        xlab("N clusters") + ylab(paste("Score (",score.type, ")",sep="")) +
         theme(legend.position= legend.pos) +
-        theme(axis.text.x=element_text(size=15), axis.text.y = element_text(size =15)) +
+        theme(axis.text.x=element_text(size=10), axis.text.y = element_text(size =10)) +
         ggtitle(pathway_name)  -> p
 
     if(type=="wss"){
