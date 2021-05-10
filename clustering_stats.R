@@ -92,7 +92,7 @@ quickPipeline <- function(which_pathway = 'Notch', master_seurat = c(),
 # clusters the pathway genes and makes the corresponding heatmap
 quickHeatmap <- function(which_pathway = 'Bmp', master_seurat = c() , filter_profiles = 'adult', k = 36, silent = F,
                             min_genes_ = 1, min_expr_gene = 0.2, save_pdf = F,
-                            pdf_file = ''){
+                            pdf_file = '',return_heatmap=F, cluster_genes = T){
     this_pathway = genesPathway(which_pathway )
     res_list = quickPipeline(which_pathway = which_pathway,
                              master_seurat = master_seurat,
@@ -102,15 +102,16 @@ quickHeatmap <- function(which_pathway = 'Bmp', master_seurat = c() , filter_pro
 
     df_devel = res_list$df_devel
     if(!save_pdf){
-    pheatmap(df_devel[,this_pathway ],
+      p = pheatmap(df_devel[,this_pathway ],
              annotation_row = df_devel %>% select(dataset, Cell_class),
              annotation_colors = colors_1206, show_rownames = F, fontsize = 10,
              cutree_rows = k, clustering_method = 'ward.D2',
              clustering_distance_rows = dist.cosine(df_devel[,this_pathway ] %>% as.matrix ), silent = silent,
-            main = paste(which_pathway, '--', dim(df_devel)[1],'cell types'), col = blues_pal(100))
+            main = paste(which_pathway, '--', dim(df_devel)[1],'cell types'), col = blues_pal(100),
+             cluster_cols = cluster_genes )
 
     }else{
-      pheatmap(df_devel[,this_pathway ] ,
+      p = pheatmap(df_devel[,this_pathway ] ,
                annotation_row = df_devel %>% select(dataset, Cell_class),
                annotation_colors = colors_1206, show_rownames = F, fontsize = 10,
                cutree_rows = k, clustering_method = 'ward.D2',
@@ -119,8 +120,11 @@ quickHeatmap <- function(which_pathway = 'Bmp', master_seurat = c() , filter_pro
               filename = pdf_file, height = 5, width = 5)
 
     }
-
-    return(df_devel)
+    if(return_heatmap){
+      return(p)
+    }else{
+      return(df_devel)
+    }
 }
 
 #
@@ -128,11 +132,16 @@ quickHeatmap <- function(which_pathway = 'Bmp', master_seurat = c() , filter_pro
 # only for the cell types in df_devel -- those with a pathway label
 # Mar 25
 # manual_embedding: a user-provided latent space representing all the cells in the dataset. A distance matrix will be computed from here
-global_clusterig<- function(df_devel = data.frame() , master_seurat = c() ,
-														k_final = 25,n_pcs = 100 ,manual_embedding = c()){
+global_clusterig<- function(df_devel = data.frame() ,
+                            master_seurat = c() ,
+														k_final = 25,n_pcs = 100 ,manual_embedding = c(),
+                            dist_metric ='euclidean',pathway_genes = c()){
         	# cells are filtered
         	df_devel$class_label <- df_devel$class_label %>% as.character()
 
+
+          # rename df_devel by cell_id
+          row.names(df_devel) <- df_devel$cell_id
         	# pathway colors
         	colors_1206$class_label = makeQualitativePal(length(df_devel$class_label %>% unique))
         	names(colors_1206$class_label) <- df_devel$class_label %>% unique
@@ -141,32 +150,48 @@ global_clusterig<- function(df_devel = data.frame() , master_seurat = c() ,
         	# Number of principal components
           # umap_coords by default uses cell_id as the row.name
           if(length(manual_embedding)==0){
-        	umap_coords<- Embeddings(master_seurat,reduction = 'pca')
-        	umap_coords <- umap_coords[,1:n_pcs]
-        }else{
+          	umap_coords<- Embeddings(master_seurat,reduction = 'pca')
+          	umap_coords <- umap_coords[,1:n_pcs]
+          }else{
           # this matrix should represent a latent space with row.names equal cell_id
           # when provided directly, the number of principal components is ignored
-          umap_coords = manual_embedding
-        }
+            umap_coords = manual_embedding
+          }
+
+
 
         	# use only those cell that have a notch profile
         	scaled_data = umap_coords[df_devel$cell_id, ]
-        	row.names(scaled_data)<-df_devel$cell_type # row name is the full cell type
+        	#row.names(scaled_data)<-df_devel$cell_type # row name is the full cell type
 
+          # After we specified the embedding we are using for the global clustering
+          # we set up the distance metric to be used: default euclidean
+          if(dist_metric =='euclidean')  user_dist = dist(scaled_data)  else  user_dist = dist.cosine(scaled_data )
+
+
+
+          # Global clustering of cell types uses euclidean distance + ward.D2
         	p_global = pheatmap(scaled_data %>% t ,
         				annotation_col = df_devel %>% dplyr::select( age,dataset,Tissue,Cell_class, class_label),
         				annotation_colors = colors_1206 ,
         				clustering_method = 'ward.D2',
         				cutree_cols = k_final, show_rownames = F,
-        				show_colnames = F, fontsize = 12,silent= T)
+        				show_colnames = F, fontsize = 12,silent= T,
+                clustering_distance_cols = user_dist)
 
                 # for each pathway label, we calculate the mean distance
          # in the PCA space for the cell types in that label
          k_final = length(df_devel$class_label %>% unique )
+
+         # Distance metric to be used as matrix
+         # we convert the distance to a matrix so we can compute the pair-wise similarity
+         # this matrix is already euclidean or cosine as specified by the user (euclidean by default)
+         dist_mat = as.matrix(user_dist)
+
          sapply(1:k_final, function(x){
              class_cells = df_devel$cell_id[df_devel$class_label==x]
              if(length(class_cells)>1){
-             umap_coords[class_cells,] %>% dist %>% as.matrix -> dist_class
+             dist_mat[class_cells,class_cells]  -> dist_class
 
              return(dist_class[upper.tri(dist_class)] %>% mean())
 
@@ -184,7 +209,7 @@ global_clusterig<- function(df_devel = data.frame() , master_seurat = c() ,
         sapply(1:k_final, function(x){
             class_cells = df_devel$cell_id[df_devel$global_label==x]
             if(length(class_cells)>1){
-            umap_coords[class_cells,] %>% dist %>% as.matrix -> dist_class
+            dist_mat[class_cells,class_cells]  -> dist_class
 
             return(dist_class[upper.tri(dist_class)] %>% mean())
           }else{
@@ -205,6 +230,15 @@ global_clusterig<- function(df_devel = data.frame() , master_seurat = c() ,
         path_stats$diversity = diversity_pathway
 
 
+        # compute silhouette scores for this clustering
+        # by default, we perfom gene clustering using the cosine distance and ward.D2
+        # so we also use cosine distance for the silhouette score
+        pathway_silh = clusteringSilhouette(df = df_devel, dist_metric = 'cosine', gene_list = pathway_genes)
+        # join with the main data.frame
+        path_stats %>% left_join(pathway_silh, by='class_label') -> path_stats
+        # dummy column to match later
+        global_stats$mean_silh = 0
+
         path_stats$type = "pathway"
         global_stats$type = "transcriptome"
 
@@ -217,32 +251,45 @@ global_clusterig<- function(df_devel = data.frame() , master_seurat = c() ,
         return(list('pathway' = path_stats, 'global' = global_stats))
 }
 
-# Plot all motifs ranked by their diversity score
-# Apr 19th -- migrated from Notion
-diversity_plot <-function(stats_list = list() , title_main = 'Notch'){
 
-		# data.frames with diversity scores for each profile in the pathway
-		# we use global as a control for the expected diversity in similar cell types
-		#
-		path_stats = stats_list$pathway
-		global_stats = stats_list$global
-    upper_quantile = 0.80
+clusteringSilhouette <- function(df = data.frame() , dist_metric = 'cosine', gene_list = c() ){
+  if(dist_metric=='cosine'){
+    d = silhouette(df$class_label %>% as.numeric , dist = dist.cosine(df[,gene_list] %>% as.matrix))
+  }else{
+    d = silhouette(df$class_label %>% as.numeric , dist = dist(df[,gene_list] %>% as.matrix))
+  }
 
-		g <-	path_stats %>% ggplot(aes(x = rank, y = diversity, size = n )) + geom_point()  +
-			    geom_hline(yintercept=quantile(global_stats$diversity, upper_quantile),linetype="dashed", color = "orange", size = 1) +
-			    geom_hline(yintercept=quantile(global_stats$diversity,.10),linetype="dashed", color = "orange", size = 1) +
-			    ylab("Cell type diversity (PCA)")  + theme_pubr(base_size =12 )  +
-			    xlab("Pathway profile")  + ggtitle(title_main ) +
-			    annotate(geom="text", x=3, y=quantile(global_stats$diversity, upper_quantile) +2 , label="Expected",
-			             color="black")
+  silh_df = data.frame(class_label = d[,1], neighbor = d[,2], silh = d[,3])
+  silh_df %>% group_by(class_label) %>% summarise(mean_silh = mean(silh)) -> silh_df
 
-     return(g)
+  return(silh_df)
 }
+# Plot all motifs ranked by their diversity score
+# # Apr 19th -- migrated from Notion
+# diversity_plot <-function(stats_list = list() , title_main = 'Notch'){
+#
+# 		# data.frames with diversity scores for each profile in the pathway
+# 		# we use global as a control for the expected diversity in similar cell types
+# 		#
+# 		path_stats = stats_list$pathway
+# 		global_stats = stats_list$global
+#     upper_quantile = 0.80
+#
+# 		g <-	path_stats %>% ggplot(aes(x = rank, y = diversity, size = n )) + geom_point()  +
+# 			    geom_hline(yintercept=quantile(global_stats$diversity, upper_quantile),linetype="dashed", color = "orange", size = 1) +
+# 			    geom_hline(yintercept=quantile(global_stats$diversity,.10),linetype="dashed", color = "orange", size = 1) +
+# 			    ylab("Cell type diversity (PCA)")  + theme_pubr(base_size =12 )  +
+# 			    xlab("Pathway profile")  + ggtitle(title_main ) +
+# 			    annotate(geom="text", x=3, y=quantile(global_stats$diversity, upper_quantile) +2 , label="Expected",
+# 			             color="black")
+#
+#      return(g)
+# }
 
 # only for the cell types in df_devel -- those with a pathway label
 # Mar 25
 positive_control<- function(df_devel = data.frame() , master_seurat = c() ,
-														n_pcs = 100 , n_random = 100, user_embedding =c() ){
+														n_pcs = 100 , n_random = 100, user_embedding =c(), dist_metric  = 'euclidean' ){
         	# cells are filtered
         	df_devel$class_label <- df_devel$class_label %>% as.character()
           k_final = length(df_devel$class_label %>% unique )
@@ -258,6 +305,14 @@ positive_control<- function(df_devel = data.frame() , master_seurat = c() ,
             umap_coords = user_embedding
           }
 
+          # After we specified the embedding we are using for the global clustering
+          # we set up the distance metric to be used: default euclidean
+          if(dist_metric =='euclidean')  user_dist = dist(umap_coords)  else  user_dist = dist.cosine(umap_coords )
+
+          # convert to matrix. keeps the same row.names in the original embedding
+          # Just make sure the embedding is correctly named by rows
+          dist_mat = as.matrix(user_dist)
+
           control_list = list()
           for( i in 1:n_random){
              df_devel$class_label = sample(df_devel$class_label)
@@ -266,7 +321,7 @@ positive_control<- function(df_devel = data.frame() , master_seurat = c() ,
              sapply(1:k_final, function(x){
                 class_cells = df_devel$cell_id[df_devel$class_label==x]
                 if(length(class_cells)>1){
-                umap_coords[class_cells,] %>% dist %>% as.matrix -> dist_class
+                dist_mat[class_cells,class_cells]  -> dist_class
 
                 return(dist_class[upper.tri(dist_class)] %>% mean())
 
@@ -305,7 +360,8 @@ positive_control<- function(df_devel = data.frame() , master_seurat = c() ,
 # filter_profile: 'devel' or 'adult' to filter cell types before running the pipeline.
 controlDiversity<-function(null_dist = c(), which_pathway = c(), which_k = c(), seurat_obj= c() ,
 													 n_rand=100, filter_profile = 'adult',
-                            filter_manual_cells = c() , verbose = F, n_pcs = 100, manual_embedding = c()){
+                            filter_manual_cells = c() , verbose = F, n_pcs = 100, manual_embedding = c(),
+                           global_dist_metric = 'euclidean'){
 	control_stats = list()
 
 
@@ -319,7 +375,8 @@ controlDiversity<-function(null_dist = c(), which_pathway = c(), which_k = c(), 
       # specify the manual list of cell types: overrides the filtering by min.expression
       control_stats = mclapply(rand_list, parallel_pipeline, cut_k = which_k,
                             seurat_master = seurat_obj, manual_cell_types = filter_manual_cells,
-                            profile_filter = filter_profile,global_npcs = n_pcs, user_embedding = manual_embedding, mc.cores = 15)
+                            profile_filter = filter_profile,global_npcs = n_pcs, user_embedding = manual_embedding, global_metric = global_dist_metric,
+                            mc.cores = 10)
 
 	    # res_list = quickPipeline(which_pathway = rand_pathway,
 	    #                          master_seurat = seurat_obj,
@@ -347,8 +404,9 @@ controlDiversity<-function(null_dist = c(), which_pathway = c(), which_k = c(), 
 # manual_cell_types: user-specified list of cell types to use for clustering
 # this is useful for random sets of genes, to use the same cell types as the pathway such that
 # calculations of diversity are comparable.
+# global_metric: which distance metric to use for similarity calculations in the global embedding
 parallel_pipeline<- function(x, cut_k = c(), seurat_master = c(), profile_filter = 'adult' ,
-                            manual_cell_types = c() , global_npcs = 100, user_embedding = c()){
+                            manual_cell_types = c() , global_npcs = 100, user_embedding = c(), global_metric = 'euclidean'){
     # quickPipeline takes manual_cell_types as the list with cell_ids to include
     # if empty, the function will filter cell_types based on the expression of the selected genes
     res_list = quickPipeline(which_pathway = x,
@@ -359,7 +417,8 @@ parallel_pipeline<- function(x, cut_k = c(), seurat_master = c(), profile_filter
 
     stats_list = global_clusterig(df_devel = res_list$df_devel,
                                   master_seurat = seurat_master,
-                                  k_final = cut_k, n_pcs = global_npcs, manual_embedding = user_embedding)
+                                  k_final = cut_k, n_pcs = global_npcs, manual_embedding = user_embedding,
+                                  dist_metric = global_metric, pathway_genes = x)
    return(stats_list)
 }
 
@@ -380,10 +439,11 @@ fullControlPathway <- function(this_pathway = c() ,
                                min_expr_gene = 0.2,
                                min_genes_ON = 1,
                                n_pcs_global = 100,
-                               embedding_matrix = c()  # Number of principal components to consider for diversity metric
-                                ){
+                               embedding_matrix = c(),  # Number of principal components to consider for diversity metric
+                               celltype_dist_metric = 'euclidean' # distance metric to be use in the global embedding (e.g., PCA) for global similarity across cell types
+                              ){
 
-     # 1. Run the quick pipeline for the real pathway
+     # 1. Run the quick pipeline for the real pathway -- does not use any global metric for transcriptome
      #    with the specified k (found previously as optimal)
      res_list = quickPipeline(which_pathway = this_pathway,
   															master_seurat = this_seurat,
@@ -396,9 +456,13 @@ fullControlPathway <- function(this_pathway = c() ,
 
 
     # 2. Compute diversity for the cell types containing each of the pathway profiles
+    # Here we use an embedding to compute the global metric (PCA, VAE, ICA, etc)
      stats_list = global_clusterig(df_devel = res_list$df_devel,
                                     master_seurat = this_seurat,
-                                    k_final = k_pathway, n_pcs = n_pcs_global,manual_embedding = embedding_matrix)
+                                    k_final = k_pathway, n_pcs = n_pcs_global,
+                                    manual_embedding = embedding_matrix,
+                                    dist_metric = celltype_dist_metric,
+                                    pathway_genes = genesPathway(this_pathway)  )
     #print('Done clustering real pathway')
     # 3. Negative control: random sets of genes from null list
     # Note: here we want two types of filtering:
@@ -416,13 +480,14 @@ fullControlPathway <- function(this_pathway = c() ,
     															which_k = k_pathway, seurat_obj = this_seurat,
     															n_rand = n_samples, filter_profile = filter_pathway,
                                   filter_manual_cells = manual_cell_types, verbose = verbose_output,
-                                  n_pcs = n_pcs_global, manual_embedding = embedding_matrix)
+                                  n_pcs = n_pcs_global, manual_embedding = embedding_matrix,
+                                  global_dist_metric = celltype_dist_metric)
     #print(paste('Done clustering ',n_samples,' random sets'))
 
     # 4. Positive control: re-distribute pathway profiles in randomly selected cell types.
     # returns diversity scores only for the fake pathway (no global calculation)
     pos_control = positive_control(res_list$df_devel, master_seurat = this_seurat,n_random = n_samples ,n_pcs = n_pcs_global,
-                                      user_embedding = embedding_matrix)
+                                      user_embedding = embedding_matrix, dist_metric = celltype_dist_metric)
       # merge all in data.frame
     pos_control = do.call(rbind, pos_control )
     # Split negative control results: pathway (random genes), transcriptome(global diversity)
@@ -441,7 +506,13 @@ fullControlPathway <- function(this_pathway = c() ,
            data.frame(d = stats_list$global$diversity*stats_list$global$n, type = 'transcriptome'),
            data.frame(d = pos_control$diversity*pos_control$n, type ='pos control'))
 
-    return(list(diversity= df_diversity, recurrece = df_recurrence ))
+    # Apr 29th
+    # We can also return the main data.frame, with class_label, diversity and rank for each profile
+    clustered_data<-res_list$df_devel %>% left_join(stats_list$pathway %>%
+                                            rename(class_label = label) %>%
+                                            select(rank, diversity,class_label,n), by='class_label')
+
+    return(list(diversity= df_diversity, recurrece = df_recurrence, profiles = clustered_data, rank = stats_list ))
 }
 
 # Apr 1 2021
@@ -807,4 +878,158 @@ fullSpectralRecursive <- function(this_pathway, master_seurat = c(),
 
 
     return(list(recursive_res , master_recursive) )
+}
+
+
+
+# Negative control
+# Random pathways
+# for a given pathway, we are going to generate a null distribution of genes that have similar statistics
+# in terms of mean, sd, and fraction of cell types expressing the genes
+makeNullDistribution <- function(pathway_name='', null_list = c() , null_seurat = c(),
+                                  include_cell_types = c() , # cell types where the real pathway is ON
+                                  min.expr.gene = 0.1, frac_on_celltypes = 0.2,make_plot = T){
+
+        # how many cell types a gene needs to be expressed to be considered
+        min.expr.cell_types = dim(control_res$profiles)[1] * frac_on_celltypes
+
+
+        # mean and standard deviation for the pathway
+        this_pathway =genesPathway(pathway_name)
+        pathway_df =makeMainDataFrame(this_pathway, master_seurat = null_seurat )
+
+
+        # automated selection of mean and variance
+        min_mean <-apply(pathway_df[,this_pathway],2,mean) %>% quantile(.1)
+        max_sd <- apply(pathway_df[,this_pathway],2,sd) %>% max
+        max_mean <- apply(pathway_df[,this_pathway],2,mean) %>% max
+
+        # Make data frame for null genes and compute mean and sd
+        # Filter genes outside the range of the real pathway
+        hvg_df = makeMainDataFrame(null_list , master_seurat = null_seurat )
+        # filter genes based on mean and sd
+        global_means = apply(hvg_df[, null_list],2,mean)
+        null_list = which(global_means> min_mean & global_means <max_mean  & apply(hvg_df[, null_list],2,sd) < max_sd ) %>% names()
+
+        # Filter genes that do not express in at least a fraction of cell types
+        # min.max normalized data -- which is used for clustering
+        hvg_df_norm = normalizedDevel(null_list, master_seurat = null_seurat )
+        row.names(hvg_df_norm)<- hvg_df_norm$cell_id
+        # we can further filter genes based on the number of cell types they are expressed in # most HVG (or markers) are expressed in only a few cell types or exclusively which
+        # creates clusters where only one gene is expressed, which does not happen in the real pathways
+        null_list = which(apply(hvg_df_norm[include_cell_types,null_list]>  min.expr.gene, 2, sum ) > min.expr.cell_types) %>% names
+
+        # plot the null distribution and pathway genes on top
+        if(make_plot){
+            plot(log10(apply(hvg_df[,null_list],2,mean)),
+            	apply(hvg_df[,null_list],2,sd),xlab = 'gene mean',ylab ='gene SD',
+            	main= 'mean vs standard deviation in 4k HVG')
+
+            points(log10(apply(pathway_df[,this_pathway],2,mean)),
+            	apply(pathway_df[,this_pathway],2,sd), col = 'red',pch=19)
+        }
+
+        return(null_list)
+
+}
+
+# p-values based on the null distribution
+# rank_df:  we provide the statistics for the real pathway
+calculatePvalues <- function(pathway_name = '', rank_df = data.frame() ,
+                                global_embedding = c(), null_list = c(),
+                                null_seurat = c(),
+                                optimal_k = 30,
+                                global_metric ='euclidean',
+                                include_cell_types = c() ,
+                                n_rand = 300, make_plot = T){
+
+
+        # 2. get distribution from a set of genes by sampling at random
+        #    We aim for the expression statistics to be similar between the random genes
+        #    and the real pathway in terms of mean and sd. Also number of expressed genes.
+
+        this_pathway  = genesPathway(pathway_name)
+
+        rand_list = list()
+        for(rr in 1:n_rand)
+            rand_list[[rr]] = sample(null_list, length(this_pathway))
+
+        control_stats = mclapply(rand_list, parallel_pipeline, cut_k = optimal_k,
+                                  seurat_master = null_seurat,
+        													manual_cell_types = include_cell_types,
+                                  profile_filter = 'both',global_npcs = 100,
+        												  user_embedding = global_embedding , global_metric =global_metric,
+                                  mc.cores = 15)
+
+        # 3. main data frame with the null distribution
+        control_stats_list <-lapply(control_stats, function(x){x$pathway})
+        for(i in 1:length(control_stats_list))
+            control_stats_list[[i]]$batch= i
+        control_stats_df <- do.call(rbind,control_stats_list)
+
+
+        # 4. Calculate p-values for motifs and private profiles
+        p_vals = c()
+        p_vals_private = c()
+        p_val_pathway =  c()
+        p_val_pathway_private = c() 
+
+        # for each profile in the real pathway
+        # we calculate the fraction random pathways that have a similar profile
+        for(i in 1:dim(rank_df)[1]){
+
+            this_profile = rank_df[i,]
+
+            n_obs = sum (control_stats_df$diversity > this_profile$diversity & control_stats_df$n > this_profile$n & control_stats_df$mean_silh > this_profile$mean_silh)
+            p_vals[i] = n_obs/dim(control_stats_df)[1]
+
+            n_obs = sum (control_stats_df$diversity <= this_profile$diversity & control_stats_df$n >= this_profile$n & control_stats_df$mean_silh >= this_profile$mean_silh)
+
+            p_vals_private[i] = n_obs/dim(control_stats_df)[1]
+
+        		# how many pathways have at least one profile with the same stats
+        		n_obs = control_stats_df %>% dplyr::filter(diversity > this_profile$diversity, n>this_profile$n , mean_silh > this_profile$mean_silh) %>%
+        			pull(batch) %>% unique %>% length
+        		p_val_pathway[i] = n_obs/(control_stats_df$batch %>% unique %>% length)
+
+            # private profiles per pathway
+            n_obs = control_stats_df %>% dplyr::filter(diversity <= this_profile$diversity, n>this_profile$n , mean_silh > this_profile$mean_silh) %>%
+              pull(batch) %>% unique %>% length
+            p_val_pathway_private[i] = n_obs/(control_stats_df$batch %>% unique %>% length)
+
+        }
+
+        rank_df$p_value = p_vals
+        rank_df$p_value_private = p_vals_private
+        rank_df$p_val_pathway = p_val_pathway
+        rank_df$p_val_pathway_private = p_val_pathway_private
+
+        # plot the p-value in the diversity axis.
+        # this plot shows the significant motifs and private profiles
+        if(make_plot){
+          null_color = rgb(red=0.2, green=0.2, blue=0.2, alpha=0.05)
+
+          par(mfrow = c(2,2))
+          plot(rank_df$diversity, -log10( rank_df$p_value),pch = 19 )
+          points(rank_df$diversity, -log10( rank_df$p_value_private),pch = 19 , col = "red")
+          abline(h = -log10(0.05),lwd = 2)
+
+          plot(control_stats_df$diversity, control_stats_df$n, pch=16, col=null_color ,
+                main = 'Dispersion vs profile size',
+                xlab = 'dispersion',ylab ='cluster size')
+          points(rank_df$diversity, rank_df$n, col = 'red', pch =19)
+
+          plot(control_stats_df$diversity, control_stats_df$mean_silh,pch=16, col=null_color,
+          main = 'Dispersion vs silhouette',
+                xlab = 'dispersion',ylab ='silhouette_score')
+          points(rank_df$diversity, rank_df$mean_silh, col = 'red', pch =19)
+
+          plot(control_stats_df$n, control_stats_df$mean_silh,pch=16, col=null_color,
+                 main = 'size vs silhouete',
+                xlab = 'N',ylab ='silhouette_score')
+          points(rank_df$n, rank_df$mean_silh, col = 'red', pch =19)
+
+        }
+
+        return(list(rank = rank_df, null_stats = control_stats_df))
 }
