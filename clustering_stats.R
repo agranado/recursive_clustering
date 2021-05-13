@@ -775,7 +775,7 @@ ggplotPathway <- function(results,type = 'silh', pathway_name =''){
 
     control.df %>% rbind(bb) %>% ggplot(aes(x = k, y = m_score, color =data)) +
         geom_ribbon(data=control.df, aes(ymin = m_score - sd_score, ymax=m_score + sd_score),alpha = 0.2,color =NA) +
-        geom_line(size = 0.5) + theme_classic() + scale_colour_manual(values=c("black", "deeppink3")) + theme(text =element_text(size =15)) +
+        geom_line(size = 0.5) + theme_classic() + scale_colour_manual(values=c("black", "deeppink3")) + theme(text =element_text(size =10)) +
         xlab("N clusters") + ylab(paste("Score (",score.type, ")",sep="")) +
         theme(legend.position= legend.pos) +
         theme(axis.text.x=element_text(size=10), axis.text.y = element_text(size =10)) +
@@ -972,7 +972,7 @@ calculatePvalues <- function(pathway_name = '', rank_df = data.frame() ,
         p_vals = c()
         p_vals_private = c()
         p_val_pathway =  c()
-        p_val_pathway_private = c() 
+        p_val_pathway_private = c()
 
         # for each profile in the real pathway
         # we calculate the fraction random pathways that have a similar profile
@@ -1032,4 +1032,54 @@ calculatePvalues <- function(pathway_name = '', rank_df = data.frame() ,
         }
 
         return(list(rank = rank_df, null_stats = control_stats_df))
+}
+
+
+
+## PathBank pathways
+# negative controls to test pathways from a database
+# May 13th 2021
+silhouettePlot2 <- function(which_pathway = 'Notch', min_ON =2, min_expr = 0.25,
+                         n_bootstraps=100, pct_bootstrap = 0.9, max_k = 100 ,
+												 save_dir = 'data/controls/pathbank_silhouette/'){
+    this_pathway = genesPathway(which_pathway);
+    devel_adult = quickHeatmap(which_pathway =which_pathway, master_seurat = master_seurat,
+                               filter_profiles = 'both', k = 20,
+                               min_genes_ = min_ON , min_expr_gene = min_expr )
+
+    # 1. Compute the real pathway
+    s_boots = silhPathwayBootstrap(this_pathway, devel_adult$cell_id,
+                                   k_max= max_k,
+                                   master_obj = master_seurat,
+                                   dist_metric = clust_metric ,
+                                   clust_method = clust_method,
+                                   control_silh = F, n_boots = n_bootstraps,
+                                   pct_boots = pct_bootstrap )
+
+
+    boot_df = makeBootstrap_df(s_boots)
+
+    # 2. Compute the negative control
+    s_boots = silhPathwayBootstrap(this_pathway, devel_adult$cell_id,
+                                   k_max= max_k,
+                                   master_obj = master_seurat,
+                                   dist_metric = clust_metric ,
+                                   clust_method = clust_method,
+                                   control_silh = T, n_boots = n_bootstraps )
+
+    boot_df_control = makeBootstrap_df(s_boots)
+
+    # 3. Plot together
+    boot_df %>% ggplot(aes(x = k , y = m)) +
+        geom_ribbon(aes(ymin = m -s, ymax = m+s) ,fill = 'lightblue', alpha = 0.2) +
+        geom_line(color ='blue') + geom_ribbon(data = boot_df_control, aes(ymin = m -s, ymax = m+s), alpha = 0.2) +
+        geom_line(data=boot_df_control)  + theme_pubr(base_size = 12 ) + ylab('Silhouette') +
+        xlab('Number clusters') + ggtitle(which_pathway) -> g
+
+		# save to drive
+		pathway_results = list(g,boot_df, boot_df_control)
+		save(pathway_results, file = paste(save_dir,which_pathway,'.rda' ,sep=""))
+
+    # Returns plot and both data frames
+    return(pathway_results)
 }
