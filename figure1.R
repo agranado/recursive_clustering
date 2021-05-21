@@ -108,7 +108,7 @@ ecdf_diversity <- function(control_res = list() ,plot_null=F, pathway_name = 'Bm
     df  %>% ggplot(aes(x = d, col= type)) + stat_ecdf()  + ggtitle(pathway_name) +
       scale_x_continuous(trans='sqrt') +theme_pubr(base_size = 10) +
   		scale_color_manual(values =lines_palette) +
-  		ylab('Fraction of clusters') + xlab('Cell type diversity') +
+  		ylab('Fraction of clusters') + xlab('Cell state dispersion') +
       geom_vline(xintercept=quantile_line,linetype="dashed", color = "lightgray", size = 1)-> ecdf_plot
 }
 
@@ -129,6 +129,23 @@ diversity_plot <- function(stats_list = list() , title_main = 'Notch'){
 			             color="black")
 
      return(g)
+}
+
+# latest version of this functino. takes the rank data.frame
+# works better with the integrated pipeline.
+diversity_plot2 <-function(rank_df = data.frame(), title_main='',control_res = list(),
+                            upper_quantile=0.9){
+  title_main=which_pathway
+
+  global_df = control_res$diversity %>% dplyr::filter(type=='transcriptome') %>% rename(diversity=d)
+
+  rank_df %>% ggplot(aes(x=rank,y=diversity,size=n *0.3)) + geom_point(alpha=0.4) +
+      geom_hline(yintercept=quantile(global_df$diversity, upper_quantile),linetype="dashed", color = "lightgray", size = 1) +
+      geom_hline(yintercept=quantile(global_df$diversity, 1-upper_quantile),linetype="dashed", color = "lightgray", size = 1) +
+      ylab("Cell state dispersion (PCA)")  + theme_pubr(base_size =10 )  +
+      xlab("Pathway profile")  + ggtitle(title_main ) +
+      annotate(geom="text", x=5, y=quantile(global_df$diversity, upper_quantile) +2 , label="Expected",
+               color="black")
 }
 
 rank_diversity <- function(which_pathway ='Bmp', k_motifs = 20, min_expression = 0.2,
@@ -154,4 +171,155 @@ rank_diversity <- function(which_pathway ='Bmp', k_motifs = 20, min_expression =
     }else{
       return(stats_list)
     }
+}
+
+# Find profiles in disperse cell states
+# first we get the average profile matrix
+# returns a matrix of average profiles grouped by their profile class
+average_profileMatrix <-function(control_res =list(),
+                                pathway_name=''){
+
+      # 1. New: Select all profiles
+    diverse_df <- control_res$profiles
+    # 2. tidy data.frame to average gene expression within a pathway profile
+    diverse_df %>% pivot_longer(cols = genesPathway(pathway_name),
+                                names_to = 'gene', values_to = 'expression') %>%
+        select(cell_id, cell_ontology_class, Tissue,
+               Cell_class, gene, expression, class_label, rank, diversity, n) -> diverse_tidy
+    # 3. average profile
+    diverse_tidy %>% group_by(class_label,gene) %>%
+        summarise(mean_expr = mean(expression),
+                  rank = mean(rank),diversity = mean(diversity),
+                  cell_types = mean(n)) -> diverse_tidy
+
+    # 4. wide format
+    diverse_tidy %>% pivot_wider(id_cols = c(class_label,rank, diversity, cell_types),
+                                 names_from=gene,values_from=mean_expr) %>%
+                     tibble::column_to_rownames('class_label')-> diverse_mat
+
+
+    return(diverse_mat)
+
+
+}
+
+# May 20th 2021
+# type: disperse or private
+#
+profileHeatmap <- function(diverse_mat=matrix(),
+                            pathway_name = '',
+                            control_res = list(),type='disperse',
+                            save_dir = 'plots/figuresApril/fig4/',
+                            sig_level = 0.05, plot_organ_heatmap = F , filter_tissues = c() ){
+
+
+    # annotate with p-values to filter only significant profiles
+    diverse_mat %>% tibble::rownames_to_column(var='label') %>%
+    left_join(rank_df %>% select(label,p_value,mean_silh,p_value_private) %>%
+                  mutate(label=as.character(label)),
+              by ='label')  -> diverse_mat_ann
+
+    if(type=='disperse'){
+      # type I: disperse cell cell_types
+      # profiles that express cell types with higher dispersion than 0.9 quantile of the
+      # transcriptome + significan p_value
+      control_res$diversity %>%
+          dplyr::filter(type=='transcriptome') %>% # choose the null model
+          pull(d) %>% quantile(0.90) -> divers_quantile
+
+      diverse_mat_ann %>% dplyr::filter(diversity>divers_quantile & p_value <= sig_level) -> diverse_mat
+    }else if(type=='private'){
+      # type II: private
+      # we filter for profiles that express in similar cell types
+      # here we are not looking for profiles with -more similar cell types- than the transcriptomes
+      # since the transcriptome imposes a lower bound in theory
+      # here we are looking for profiles with diversity scores within the expected distribution
+      # by default less than the median + significant p_value
+      control_res$diversity %>%
+          dplyr::filter(type=='transcriptome') %>% # choose the null model
+          pull(d) %>% quantile(0.50) -> median_dispersion
+
+      diverse_mat_ann %>% dplyr::filter(diversity<=median_dispersion & p_value_private <= sig_level) -> diverse_mat
+    }
+
+    row.names(diverse_mat) <- diverse_mat$label
+    motif_heatmap <- superheat(diverse_mat[,genesPathway(pathway_name)],
+                               pretty.order.rows = T,
+                               heat.pal = blues_pal(10),
+                               #order.rows = order(diverse_mat$rank),
+
+                               #heat.pal.values = seq(0,1,0.1),
+                               bottom.label.text.angle = 90,
+                               yr = sqrt(diverse_mat$cell_types),
+                               yr.plot.type='bar',
+                               yr.axis.name = "N cell types",
+                               row.title = paste(type, 'profiles'),
+                               column.title = "Pathway genes",
+                               bottom.label.size = 0.3,
+                               grid.hline.col = "white",
+                               grid.hline.size = 2,
+
+                               left.label.text.size = 3,
+                               bottom.label.text.size = 3
+
+    )
+
+    # plot organ heatmap
+    if(plot_organ_heatmap){
+      organDistribution_heatmap(control_res, diverse_mat, pathway_name, filter_tissues, save_dir)
+    }
+
+
+    # save to pdf
+    gg = motif_heatmap$plot
+    # given the font size and ggsave parameters
+    # saving at width = 3.5 is optimal for 11 genes
+    # height = 4.5 works for 11 profiles
+    fig_width = 3.5/11 * length(genesPathway(pathway_name))
+    # 1.5 in baseline for plot annotations
+    fig_height = 0.37*4.5 + 3.5/11 * dim(diverse_mat)[1] # 37% of total height is for legend/ the rest is for the heatmap
+    ggsave(paste(save_dir,
+                  pathway_name,'_',type,'_heatmap_may.pdf',sep=''),
+                  gg, height=fig_height, width = fig_width)
+
+    # return the graphic object, the averaged matrix
+    return(list(motif_heatmap, diverse_mat))
+}
+
+# for disperse profiles, we want to explore
+# their distribution across different tissues in the organism
+# for this, we create a table of organ vs profile
+# also, we want to keep the same order as in the motif heatmap
+#
+organDistribution_heatmap <- function(control_res = list() ,
+                                      diverse_mat  = data.frame(), pathway_name = '',
+                                      filter_out_tissues = c(),
+                                      save_dir = 'plots/figuresApril/fig4/') {
+
+  diverse_df = control_res$profiles # extracte the pathway clustering
+  diverse_df %>% dplyr::filter(class_label %in% diverse_mat$label ) %>%
+    select(Tissue, class_label ) %>% dplyr::filter(!Tissue %in% filter_out_tissues) %>% group_by(class_label,Tissue)%>%
+    count  %>%
+    pivot_wider(id_cols=class_label,names_from = Tissue,
+                values_from= n,values_fill = 0) -> tissue_distribution
+
+
+  # color palette for the organ heatmap
+  tissue_pal<-colorRampPalette(brewer.pal(n = 9, name = 'PuRd'))
+
+  x = tissue_distribution %>% ungroup %>% select(-class_label) %>% as.matrix()
+  row.names(x) <- tissue_distribution$class_label
+  # make tissue names pretty
+  colnames(x)<-str_replace(string = colnames(x),pattern ="_",replacement = ' ') %>% firstup()
+
+  # use pheatmap
+  # we want to plot the profiles in the same order as diverse mat heatmap
+  #
+  pheatmap(sqrt(x), treeheight_row = 20,treeheight_col = 20,
+  		clustering_method = 'ward.D2',col = tissue_pal(100),
+  		fontsize =12,angle_col = 45,
+  		filename = paste(save_dir, pathway_name, '_Tissue_distribution_bmp.pdf'),
+  		height =4, width = 6) # keep this size to make it similar to the motif heatmap
+
+
 }

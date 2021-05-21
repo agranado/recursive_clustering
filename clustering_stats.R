@@ -92,7 +92,7 @@ quickPipeline <- function(which_pathway = 'Notch', master_seurat = c(),
 # clusters the pathway genes and makes the corresponding heatmap
 quickHeatmap <- function(which_pathway = 'Bmp', master_seurat = c() , filter_profiles = 'adult', k = 36, silent = F,
                             min_genes_ = 1, min_expr_gene = 0.2, save_pdf = F,
-                            pdf_file = '',return_heatmap=F, cluster_genes = T){
+                            pdf_file = '',return_heatmap=F, cluster_genes = T, skip_plot = F){
     this_pathway = genesPathway(which_pathway )
     res_list = quickPipeline(which_pathway = which_pathway,
                              master_seurat = master_seurat,
@@ -101,27 +101,33 @@ quickHeatmap <- function(which_pathway = 'Bmp', master_seurat = c() , filter_pro
                             min_genes_on = min_genes_, min_expr = min_expr_gene)
 
     df_devel = res_list$df_devel
-    if(!save_pdf){
-      p = pheatmap(df_devel[,this_pathway ],
-             annotation_row = df_devel %>% select(dataset, Cell_class),
-             annotation_colors = colors_1206, show_rownames = F, fontsize = 10,
-             cutree_rows = k, clustering_method = 'ward.D2',
-             clustering_distance_rows = dist.cosine(df_devel[,this_pathway ] %>% as.matrix ), silent = silent,
-            main = paste(which_pathway, '--', dim(df_devel)[1],'cell types'), col = blues_pal(100),
-             cluster_cols = cluster_genes )
+    #skip plot will not call heatmap but just return the data.frame
+    if(!skip_plot){
+          if(!save_pdf){
+            p = pheatmap(df_devel[,this_pathway ],
+                   annotation_row = df_devel %>% select(dataset, Cell_class),
+                   annotation_colors = colors_1206, show_rownames = F, fontsize = 10,
+                   cutree_rows = k, clustering_method = 'ward.D2',
+                   clustering_distance_rows = dist.cosine(df_devel[,this_pathway ] %>% as.matrix ), silent = silent,
+                  main = paste(which_pathway, '--', dim(df_devel)[1],'cell types'), col = blues_pal(100),
+                   cluster_cols = cluster_genes )
 
-    }else{
-      p = pheatmap(df_devel[,this_pathway ] ,
-               annotation_row = df_devel %>% select(dataset, Cell_class),
-               annotation_colors = colors_1206, show_rownames = F, fontsize = 10,
-               cutree_rows = k, clustering_method = 'ward.D2',
-               clustering_distance_rows = dist.cosine(df_devel[,this_pathway ] %>% as.matrix ), silent = silent,
-              main = paste(which_pathway, '--', dim(df_devel)[1],'cell types'), col = blues_pal(100),
-              filename = pdf_file, height = 5, width = 5)
+          }else{
+            p = pheatmap(df_devel[,this_pathway ] ,
+                     annotation_row = df_devel %>% select(dataset, Cell_class),
+                     annotation_colors = colors_1206, show_rownames = F, fontsize = 10,
+                     cutree_rows = k, clustering_method = 'ward.D2',
+                     clustering_distance_rows = dist.cosine(df_devel[,this_pathway ] %>% as.matrix ), silent = silent,
+                    main = paste(which_pathway, '--', dim(df_devel)[1],'cell types'), col = blues_pal(100),
+                    cluster_cols = cluster_genes ,
+                    filename = pdf_file, height = 5, width = 5)
 
-    }
-    if(return_heatmap){
-      return(p)
+          }
+          if(return_heatmap){
+            return(p)
+          }else{
+            return(df_devel)
+          }
     }else{
       return(df_devel)
     }
@@ -1041,11 +1047,16 @@ calculatePvalues <- function(pathway_name = '', rank_df = data.frame() ,
 # May 13th 2021
 silhouettePlot2 <- function(which_pathway = 'Notch', min_ON =2, min_expr = 0.25,
                          n_bootstraps=100, pct_bootstrap = 0.9, max_k = 100 ,
+												 clust_metric = 'cosine',  clust_method = 'ward.D2',
 												 save_dir = 'data/controls/pathbank_silhouette/'){
     this_pathway = genesPathway(which_pathway);
     devel_adult = quickHeatmap(which_pathway =which_pathway, master_seurat = master_seurat,
                                filter_profiles = 'both', k = 20,
-                               min_genes_ = min_ON , min_expr_gene = min_expr )
+                               min_genes_ = min_ON , min_expr_gene = min_expr ,
+															 skip_plot =T) # skip_plot overrides silent and return_pdf
+
+    # prevent pathways not expressing enough cells from throwing an error
+		if(max_k >= dim(devel_adult)[1]) max_k = dim(devel_adult)[1] -10
 
     # 1. Compute the real pathway
     s_boots = silhPathwayBootstrap(this_pathway, devel_adult$cell_id,
@@ -1070,16 +1081,41 @@ silhouettePlot2 <- function(which_pathway = 'Notch', min_ON =2, min_expr = 0.25,
     boot_df_control = makeBootstrap_df(s_boots)
 
     # 3. Plot together
-    boot_df %>% ggplot(aes(x = k , y = m)) +
-        geom_ribbon(aes(ymin = m -s, ymax = m+s) ,fill = 'lightblue', alpha = 0.2) +
-        geom_line(color ='blue') + geom_ribbon(data = boot_df_control, aes(ymin = m -s, ymax = m+s), alpha = 0.2) +
-        geom_line(data=boot_df_control)  + theme_pubr(base_size = 12 ) + ylab('Silhouette') +
-        xlab('Number clusters') + ggtitle(which_pathway) -> g
+    # boot_df %>% ggplot(aes(x = k , y = m)) +
+    #     geom_ribbon(aes(ymin = m -s, ymax = m+s) ,fill = 'lightblue', alpha = 0.2) +
+    #     geom_line(color ='blue') + geom_ribbon(data = boot_df_control, aes(ymin = m -s, ymax = m+s), alpha = 0.2) +
+    #     geom_line(data=boot_df_control)  + theme_pubr(base_size = 12 ) + ylab('Silhouette') +
+    #     xlab('Number clusters') + ggtitle(which_pathway) -> g
 
 		# save to drive
-		pathway_results = list(g,boot_df, boot_df_control)
+		pathway_results = list(c() ,boot_df, boot_df_control)
 		save(pathway_results, file = paste(save_dir,which_pathway,'.rda' ,sep=""))
 
     # Returns plot and both data frames
     return(pathway_results)
+}
+# May 17th imported from Notion
+# functions for silhouette score control (pathbank + random pathways )
+#
+# works in parallel -- filters for min expression and min genes ON
+countCelltypesPathway <- function(test_pathways = c() ){
+					mclapply(test_pathways, function(x){
+								# 1. make the data.frame
+								min_expr = 0.3
+								min_genes_on = 2
+								this_pathway = genesPathway(x)
+								df_devel <- normalizedDevel(this_pathway,sat_val = 0.99,
+								                fill_zero_rows = F, master_seurat = master_seurat ,
+								                which_datasets = 'both')
+
+								# 2. how many genes ON
+								df_devel %>% mutate(cell_type = paste(global_cluster, '--',Tissue,': ', cell_ontology_class,'-', age, sep="")) -> df_devel
+								        df_devel$genes_on = rowSums(df_devel[,this_pathway]>min_expr )
+
+								row.names(df_devel) <- df_devel$cell_type
+
+								df_devel %>% dplyr::filter(genes_on>min_genes_on ) -> df_devel
+
+								return(dim(df_devel)[1])
+				}, mc.cores = 72)
 }
